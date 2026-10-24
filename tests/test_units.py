@@ -109,6 +109,33 @@ class Progress(unittest.TestCase):
         self.assertFalse(st["todo"])
 
 
+class Route(unittest.TestCase):
+    def setUp(self):
+        builds = list(Path.home().glob("Documents/Path of Building/Builds/**/*.xml"))
+        if not builds:
+            self.skipTest("no Path of Building builds on this machine")
+        specs, active = build.load(str(builds[0]))
+        self.plan = Plan(TREE, specs[active])
+
+    def test_route_is_connected_and_in_the_build(self):
+        route = self.plan.route(set(), 40)
+        reached = {self.plan.start}
+        for n in route:
+            node = TREE.nodes[n]
+            self.assertIn(n, self.plan.target)
+            ok = bool(node.neighbours & reached) or (
+                node.kind == "mastery" and any(TREE.nodes[m].group == node.group and TREE.nodes[m].kind == "notable"
+                                               for m in reached))
+            self.assertTrue(ok, f"step {node.name} isn't connected to what's taken")
+            reached.add(n)
+        self.assertEqual(len(route), len(set(route)))
+
+    def test_route_continues_from_allocated(self):
+        first = self.plan.route(set(), 10)
+        later = self.plan.route(set(first[:5]), 5)
+        self.assertTrue(set(later).isdisjoint(first[:5]))
+
+
 class Site(unittest.TestCase):
     def test_account_names(self):
         self.assertEqual(character.normalise_account("Some Name-1234"), "SomeName#1234")

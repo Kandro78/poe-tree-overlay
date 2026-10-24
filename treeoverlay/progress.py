@@ -163,3 +163,35 @@ class Plan:
         nxt |= {n for n in todo if self.tree.nodes[n].kind == "mastery"
                 and any(self.tree.nodes[m].group == self.tree.nodes[n].group for m in done)}
         return {"done": done, "next": nxt, "todo": todo, "wrong": wrong & seen, "step": step}
+
+    VALUABLE = ("notable", "keystone", "jewel", "mastery")
+
+    def route(self, done, length):
+        """The next `length` points in an order that is always allocatable:
+        each step takes the open node closest to the nearest remaining notable,
+        keystone, jewel socket or mastery, so every point leads somewhere."""
+        nodes = self.tree.nodes
+        reached = set(done) | {self.start}
+        todo = self.target - reached
+        order = []
+        while todo and len(order) < length:
+            # how far each remaining node is from something worth having, inside the build
+            dist = {n: 0 for n in todo if nodes[n].kind in self.VALUABLE}
+            queue = deque(dist)
+            while queue:
+                n = queue.popleft()
+                for m in nodes[n].neighbours:
+                    if m in todo and m not in dist:
+                        dist[m] = dist[n] + 1
+                        queue.append(m)
+            groups = {nodes[n].group for n in reached if nodes[n].kind == "notable"}
+            frontier = [n for n in todo
+                        if (nodes[n].neighbours & reached)
+                        or (nodes[n].kind == "mastery" and nodes[n].group in groups)]
+            if not frontier:
+                break
+            pick = min(frontier, key=lambda n: (dist.get(n, 999), n))
+            order.append(pick)
+            reached.add(pick)
+            todo.discard(pick)
+        return order

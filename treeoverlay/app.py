@@ -29,7 +29,7 @@ ROOT = DATA_DIR.parent
 SETTINGS = ROOT / "settings.json"
 DEFAULTS = {"last_input": "", "spec": -1, "mask_rects": None, "fps": 8, "show_progress": True,
             "account": "", "character": "", "realm": "pc",
-            "show_labels": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
+            "show_labels": True, "route_length": 8, "auto_next_tree": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
 
 user32 = ctypes.windll.user32
 VK = {f"F{i}": 0x6F + i for i in range(1, 13)}
@@ -282,6 +282,7 @@ class Overlay(QWidget):
         self.nodes, self.edges = [], []
         self.status = None           # Plan.status() result, None until something was read
         self.covered_rects = []      # screen areas a game tooltip covers right now
+        self.route = []              # the next points to take, in order
         self.transform = None
         self.rect_px = None
         self.message = ""            # calibration prompts
@@ -310,6 +311,7 @@ class Overlay(QWidget):
         self.nodes = [self.tree.nodes[n] for n in self.plan.target]
         self.edges = self.tree.edges(list(self.plan.target) + [self.plan.start])
         self.status = None
+        self.route = []
         self.update()
 
     def set_progress(self, progress):
@@ -317,6 +319,7 @@ class Overlay(QWidget):
             return
         allocated, seen, self.covered_rects = progress
         self.status = self.plan.status(allocated, seen) if seen else None
+        self.route = self.plan.route(self.status["done"], self.settings["route_length"]) if self.status else []
 
     def _tick(self):
         if self.transform is None:
@@ -575,6 +578,8 @@ class Overlay(QWidget):
 
         p.setBrush(Qt.NoBrush)
         labels = []
+        step_of = {n: i + 1 for i, n in enumerate(self.route)}
+        badges = []
         for n in self.nodes:
             x, y = t.to_screen(n.x, n.y)
             if not (-50 < x < w + 50 and -50 < y < h + 50):
@@ -586,16 +591,20 @@ class Overlay(QWidget):
                 p.setPen(QPen(color, max(1.5, 5 * s)))
                 p.drawEllipse(QPointF(x, y), r * 0.9, r * 0.9)
                 continue
-            if n.id in nxt:
+            if step_of.get(n.id) == 1:
                 grow = 1.25 + 0.15 * pulse
                 p.setPen(QPen(QColor(255, 255, 255, int(90 + 120 * pulse)), max(3.0, 8 * s)))
                 p.drawEllipse(QPointF(x, y), r * grow, r * grow)
                 p.setPen(QPen(color, max(3.5, 14 * s)))
+            elif n.id in nxt:
+                p.setPen(QPen(color, max(3.0, 13 * s)))
             else:
                 p.setPen(QPen(color, max(2.5, 10 * s)))
             p.drawEllipse(QPointF(x, y), r, r)
+            if n.id in step_of:
+                badges.append((x + r * 0.75, y - r * 0.75, step_of[n.id]))
             # names for what to take next; zoomed in, for every notable/mastery left
-            if self.settings["show_labels"] and (n.id in nxt or s >= LABEL_ZOOM):
+            if self.settings["show_labels"] and (n.id in step_of or s >= LABEL_ZOOM):
                 if n.kind == "mastery":
                     text = self._mastery_text(n.id)
                     if text:
@@ -614,6 +623,16 @@ class Overlay(QWidget):
         size = 10 if s < 0.2 else 12
         for x, y, text, color in labels:
             self._label(p, x, y, text, color, size)
+        # the order to take the next points in
+        br = max(12.0, 34 * s)
+        p.setFont(QFont("Segoe UI", max(7, int(br * 0.75)), QFont.Bold))
+        for x, y, number in badges:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 230) if number == 1 else QColor(20, 20, 20, 220))
+            p.drawEllipse(QPointF(x, y), br, br)
+            p.setPen(QColor(0, 0, 0) if number == 1 else QColor(255, 225, 140))
+            p.drawText(QRectF(x - br, y - br, 2 * br, 2 * br), Qt.AlignCenter, str(number))
+        p.setBrush(Qt.NoBrush)
         p.restore()
 
     def progress_text(self):
@@ -629,7 +648,7 @@ class Overlay(QWidget):
         else:
             line += " · tree complete"
         if st["wrong"]:
-            line += f" · {len(st['wrong'])} not in build"
+            line += f" · {len(st['wrong'])} to refund"
         return line
 
 
@@ -699,6 +718,7 @@ class ControlWindow(QWidget):
         self.site_alloc, self.site_masteries, self.site_time = None, {}, 0.0
         self.site.characters_ready.connect(self.on_characters)
         self.site.passives_ready.connect(self.on_site_passives)
+        self._auto_from = None        # tree index already auto-advanced from
         self.last_reading = None      # last (allocated, seen, covered) from the screen
         self.tree_open = False
 
@@ -803,12 +823,24 @@ class ControlWindow(QWidget):
         everything = frozenset(n.id for n in self.tree.nodes.values() if not n.ascendancy and n.kind != "start")
         return frozenset(merged), everything, covered
 
+    def _maybe_next_tree(self):
+        """When the current tree is complete, move on to the build's next one."""
+        st = self.overlay.status
+        idx = self.spec_box.currentIndex()
+        if (self.settings["auto_next_tree"] and st and not st["todo"] and idx + 1 < len(self.specs)
+                and self._auto_from != idx):
+            self._auto_from = idx
+            QTimer.singleShot(1500, lambda: self.spec_box.setCurrentIndex(idx + 1)
+                              if self.spec_box.currentIndex() == idx else None)
+            self.picker.show_toast(f"Tree complete: switching to {self.specs[idx + 1].title}", 4)
+
     def _update_progress(self):
         progress = self._merged_progress()
         if progress is not None and self.settings["show_progress"]:
             self.overlay.set_progress(progress)
             self.picker.set_progress(self.overlay.progress_text())
             self.overlay.update()
+            self._maybe_next_tree()
 
     def _setting(self, key, value):
         self.settings[key] = value
@@ -884,6 +916,7 @@ class ControlWindow(QWidget):
             self.last_reading = progress
         if self.settings["show_progress"] and (progress is not None or opened):
             self.overlay.set_progress(self._merged_progress())
+            self._maybe_next_tree()
         self.overlay.set_transform(t if self.show_box.isChecked() else None, cursor)
         self.picker.place(rect, t is not None and self.show_box.isChecked())
         self.picker.set_progress(self.overlay.progress_text())
