@@ -11,8 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from treeoverlay import build, updater  # noqa: E402
-from treeoverlay.progress import Plan  # noqa: E402
+from treeoverlay import build, character, updater  # noqa: E402
+from treeoverlay.progress import Plan, merge_allocations  # noqa: E402
 from treeoverlay.tree import PassiveTree  # noqa: E402
 
 TREE = PassiveTree()
@@ -107,6 +107,26 @@ class Progress(unittest.TestCase):
     def test_complete(self):
         st = self.plan.status(set(self.path), set(self.path))
         self.assertFalse(st["todo"])
+
+
+class Site(unittest.TestCase):
+    def test_account_names(self):
+        self.assertEqual(character.normalise_account("Some Name-1234"), "SomeName#1234")
+        self.assertEqual(character.normalise_account("Name#1234"), "Name#1234")
+        self.assertEqual(character.normalise_account("plain"), "plain")
+
+    def test_parse_site_and_pob_shapes(self):
+        site = {"hashes": [54447, 36774], "hashes_ex": [], "mastery_effects": {"28680": 61071}, "items": []}
+        self.assertEqual(character.parse_passives(site), ({54447, 36774}, {28680: 61071}))
+        self.assertEqual(character.parse_passives({"passives": site})[0], {54447, 36774})
+        with self.assertRaises(character.SiteError):
+            character.parse_passives({"error": {"code": 1, "message": "Resource not found"}})
+
+    def test_merge(self):
+        site = {1, 2, 3}
+        # screen read 2 as unallocated (refunded since), and 4 as allocated (taken since)
+        self.assertEqual(merge_allocations({4}, {2, 4}, site), {1, 3, 4})
+        self.assertEqual(merge_allocations({4}, {2, 4}, None), {4})
 
 
 if __name__ == "__main__":

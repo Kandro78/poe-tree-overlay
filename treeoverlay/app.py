@@ -5,28 +5,30 @@ import json
 import math
 import os
 import queue
+import threading
 import sys
 import time
 import traceback
 from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QRegion
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel,
                                QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget)
 
-from . import build, updater
+from . import build, character, updater
 from .capture import Capture
 from .picker import TreePicker
-from .progress import AllocationReader, Plan
+from .progress import AllocationReader, Plan, merge_allocations
 from .tracker import Tracker, Transform
 from .tree import CLASS_NAMES, DATA_DIR, PassiveTree
 
 ROOT = DATA_DIR.parent
 SETTINGS = ROOT / "settings.json"
 DEFAULTS = {"last_input": "", "spec": -1, "mask_rects": None, "fps": 8, "show_progress": True,
+            "account": "", "character": "", "realm": "pc",
             "show_labels": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
 
 user32 = ctypes.windll.user32
@@ -243,6 +245,28 @@ class Worker(QThread):
         if t is None and self.tracker.gate is None and self.tracker.lost_frames > 3:
             pause = 0.5   # nothing learned yet to tell if the tree is open: search less often
         time.sleep(max(0.0, pause - (time.perf_counter() - t0)))
+
+
+class SiteFetcher(QObject):
+    """Fetches from pathofexile.com off the UI thread."""
+    characters_ready = Signal(object, object)   # list or None, error text
+    passives_ready = Signal(object, object, object)   # character, (hashes, masteries) or None, error text
+
+    def fetch_characters(self, account, realm):
+        def run():
+            try:
+                self.characters_ready.emit(character.characters(account, realm), None)
+            except character.SiteError as exc:
+                self.characters_ready.emit(None, str(exc))
+        threading.Thread(target=run, daemon=True).start()
+
+    def fetch_passives(self, account, name, realm):
+        def run():
+            try:
+                self.passives_ready.emit(name, character.passives(account, name, realm), None)
+            except character.SiteError as exc:
+                self.passives_ready.emit(name, None, str(exc))
+        threading.Thread(target=run, daemon=True).start()
 
 
 class Overlay(QWidget):
@@ -636,14 +660,27 @@ class ControlWindow(QWidget):
         self.labels_box.setChecked(self.settings["show_labels"])
         self.progress_box = QCheckBox("Track allocated passives")
         self.progress_box.setChecked(self.settings["show_progress"])
+        self.account = QLineEdit(self.settings["account"])
+        self.account.setPlaceholderText("pathofexile.com account, e.g. Name#1234 (optional)")
+        chars_btn = QPushButton("Get characters")
+        self.char_box = QComboBox()
+        self.char_box.setMinimumWidth(220)
+        if self.settings["character"]:
+            self.char_box.addItem(self.settings["character"])
+        self.site_status = QLabel("")
+        self.site_status.setWordWrap(True)
+        self.site_status.setStyleSheet("color: gray")
 
         row = QHBoxLayout(); row.addWidget(self.input, 1); row.addWidget(load_btn); row.addWidget(file_btn)
         row2 = QHBoxLayout(); row2.addWidget(QLabel("Tree:")); row2.addWidget(self.spec_box, 1)
+        row_site = QHBoxLayout(); row_site.addWidget(QLabel("Character:")); row_site.addWidget(self.account, 1)
+        row_site.addWidget(chars_btn); row_site.addWidget(self.char_box)
         row3 = QHBoxLayout(); row3.addWidget(self.show_box); row3.addWidget(self.progress_box); row3.addWidget(self.labels_box)
         row3.addStretch(); row3.addWidget(cal_btn); row3.addWidget(reset_btn); row3.addWidget(update_btn)
         lay = QVBoxLayout(self)
-        for r in (row, row2):
+        for r in (row, row2, row_site):
             lay.addLayout(r)
+        lay.addWidget(self.site_status)
         lay.addWidget(self.info)
         lay.addLayout(row3)
         lay.addWidget(self.status)
@@ -655,7 +692,15 @@ class ControlWindow(QWidget):
         help_text.setWordWrap(True)
         help_text.setStyleSheet("color: gray")
         lay.addWidget(help_text)
-        self.resize(760, 230)
+        self.resize(760, 260)
+
+        # allocated passives from pathofexile.com (all of the tree, not only what was seen)
+        self.site = SiteFetcher()
+        self.site_alloc, self.site_masteries, self.site_time = None, {}, 0.0
+        self.site.characters_ready.connect(self.on_characters)
+        self.site.passives_ready.connect(self.on_site_passives)
+        self.last_reading = None      # last (allocated, seen, covered) from the screen
+        self.tree_open = False
 
         self.worker = Worker(self.settings, self.tree)
         self.overlay = Overlay(self.tree, self.settings, self.worker.tracker.mask_rects)
@@ -678,6 +723,9 @@ class ControlWindow(QWidget):
         reset_btn.clicked.connect(lambda: self.worker.requests.put("reset"))
         update_btn.clicked.connect(self.update_tree_data)
         self.labels_box.toggled.connect(lambda on: self._setting("show_labels", on))
+        chars_btn.clicked.connect(self.get_characters)
+        self.account.returnPressed.connect(self.get_characters)
+        self.char_box.activated.connect(lambda _: self.choose_character(self.char_box.currentText()))
         self.progress_box.toggled.connect(lambda on: self._setting("show_progress", on))
 
         self.key_state = {}
@@ -685,6 +733,82 @@ class ControlWindow(QWidget):
         self.hotkeys.start()
         if self.input.text():
             QTimer.singleShot(0, lambda: self.load(self.input.text(), quiet=True))
+        if self.settings["account"] and self.settings["character"]:
+            QTimer.singleShot(0, self.refresh_site)
+
+    # -- pathofexile.com --------------------------------------------------------
+    def get_characters(self):
+        account = self.account.text().strip()
+        if not account:
+            return
+        self.settings["account"] = character.normalise_account(account)
+        save_settings(self.settings)
+        self.site_status.setText("Getting characters…")
+        self.site.fetch_characters(self.settings["account"], self.settings["realm"])
+
+    def on_characters(self, chars, error):
+        if error:
+            self.site_status.setText(error)
+            return
+        chars = sorted(chars, key=lambda c: -c["level"])
+        self.char_box.clear()
+        for c in chars:
+            self.char_box.addItem(c["name"])
+            self.char_box.setItemData(self.char_box.count() - 1, f"{c['class']} {c['level']}, {c['league']}",
+                                      Qt.ToolTipRole)
+        current = self.settings["character"]
+        if current in [c["name"] for c in chars]:
+            self.char_box.setCurrentText(current)
+        self.site_status.setText(f"{len(chars)} characters. Pick the one you're playing.")
+        self.choose_character(self.char_box.currentText())
+
+    def choose_character(self, name):
+        if not name:
+            return
+        if name != self.settings["character"]:
+            self.settings["character"] = name
+            save_settings(self.settings)
+            self.worker.requests.put("reset_alloc")    # the screen readings were another character's
+        self.refresh_site(force=True)
+
+    def refresh_site(self, force=False):
+        """Fetch the character's passives; when opening the tree at most every 20 s."""
+        if not (self.settings["account"] and self.settings["character"]):
+            return
+        if not force and time.time() - self.site_time < 20:
+            return
+        self.site_time = time.time()
+        self.site.fetch_passives(self.settings["account"], self.settings["character"], self.settings["realm"])
+
+    def on_site_passives(self, name, result, error):
+        if name != self.settings["character"]:
+            return
+        if error:
+            self.site_status.setText(error)
+            return
+        self.site_alloc, self.site_masteries = result
+        self.site_status.setText(f"{name}: {len(self.site_alloc)} passives allocated on pathofexile.com "
+                                 f"(updated {time.strftime('%H:%M:%S')}).")
+        self._update_progress()
+
+    def _merged_progress(self):
+        """What is allocated: what the screen shows for nodes it has read, the
+        site's state for everything else."""
+        reading = self.last_reading
+        allocated, seen, covered = reading if reading else (frozenset(), frozenset(), [])
+        if self.site_alloc is None:
+            return reading
+        site = {n for n in self.site_alloc if n in self.tree.nodes}
+        merged = merge_allocations(allocated, seen, site)
+        everything = frozenset(n.id for n in self.tree.nodes.values() if not n.ascendancy and n.kind != "start")
+        return frozenset(merged), everything, covered
+
+    def _update_progress(self):
+        progress = self._merged_progress()
+        if progress is not None and self.settings["show_progress"]:
+            self.overlay.set_progress(progress)
+            self.picker.set_progress(self.overlay.progress_text())
+            self.overlay.update()
 
     def _setting(self, key, value):
         self.settings[key] = value
@@ -752,14 +876,22 @@ class ControlWindow(QWidget):
     # -- tracking ------------------------------------------------------------
     def on_located(self, t, rect, progress, cursor):
         self.overlay.place(rect)
-        if self.settings["show_progress"]:
-            self.overlay.set_progress(progress)
+        opened = t is not None and not self.tree_open
+        self.tree_open = t is not None
+        if opened:
+            self.refresh_site()
+        if progress is not None:
+            self.last_reading = progress
+        if self.settings["show_progress"] and (progress is not None or opened):
+            self.overlay.set_progress(self._merged_progress())
         self.overlay.set_transform(t if self.show_box.isChecked() else None, cursor)
         self.picker.place(rect, t is not None and self.show_box.isChecked())
         self.picker.set_progress(self.overlay.progress_text())
 
     def reread(self):
         self.worker.requests.put("reset_alloc")
+        self.last_reading = None
+        self.refresh_site(force=True)
         self.picker.show_toast("Reading allocated passives again.\nPan over your tree once.", 4)
 
     def next_tree(self):

@@ -119,6 +119,14 @@ class AllocationReader:
         return set(self.score)
 
 
+def merge_allocations(screen_allocated, screen_seen, site_allocated):
+    """Nodes read on screen keep the screen's answer (it's the newest);
+    everything else comes from the character's state on pathofexile.com."""
+    if site_allocated is None:
+        return set(screen_allocated)
+    return (set(site_allocated) - (set(screen_seen) - set(screen_allocated))) | set(screen_allocated)
+
+
 class Plan:
     """Target build compared with what is allocated."""
 
