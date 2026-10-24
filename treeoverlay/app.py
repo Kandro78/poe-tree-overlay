@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, 
 from . import build, character, updater
 from .ascendancy import AscendancyFinder
 from .capture import Capture
+from .cluster import ClusterLayout
 from .picker import TreePicker
 from .progress import AllocationReader, Plan, merge_allocations
 from .tracker import Tracker, Transform
@@ -200,6 +201,7 @@ class Worker(QThread):
             return
         if isinstance(req, tuple) and req[0] == "ascendancy":
             self.asc.set_ascendancy(req[1])
+            self.reader.refresh_nodes()       # a new build may have brought cluster jewel nodes
             req = None
         if req == "reset":
             self.tracker.reset()
@@ -330,6 +332,7 @@ class Overlay(QWidget):
             user32.SetWindowDisplayAffinity(int(self.winId()), WDA_EXCLUDEFROMCAPTURE)
 
     def set_spec(self, spec):
+        ClusterLayout(self.tree).add_to_tree(spec.nodes)      # the build's cluster jewel nodes
         self.plan = Plan(self.tree, spec)
         name = self.tree.ascendancy_name(spec.class_id, spec.ascend_id)
         self.asc_nodes = [self.tree.nodes[n] for n in spec.nodes
@@ -955,7 +958,7 @@ class ControlWindow(QWidget):
         self.info.setText(
             f"{CLASS_NAMES[self.spec.class_id]} · {kinds.count('normal')} small, {kinds.count('notable')} notables, "
             f"{kinds.count('keystone')} keystones, {kinds.count('mastery')} masteries"
-            + (f" · {skipped} cluster-jewel nodes not shown" if skipped else "")
+            + (f" · {skipped} nodes not placed" if skipped else "")
             + (f" · tree {self.spec.tree_version}" if self.spec.tree_version else "")
             + ("" if updater.matches(self.spec.tree_version, updater.installed_version()) else
                f" · <b>this build is for tree {self.spec.tree_version}, the overlay has {updater.installed_version()}</b>"))

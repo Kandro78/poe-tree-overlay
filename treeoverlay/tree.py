@@ -91,6 +91,7 @@ class PassiveTree:
                     self.nodes[nid].neighbours.add(o)
                     self.nodes[o].neighbours.add(nid)
         self.orbit_radii = radii
+        self.orbit_angles = angles
         self.bounds = (raw["min_x"], raw["min_y"], raw["max_x"], raw["max_y"])
 
     def class_start(self, class_id):

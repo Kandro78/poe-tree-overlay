@@ -39,6 +39,11 @@ class AllocationReader:
         self.tree = tree
         self.mask_rects = mask_rects
         self.score = {}    # node id -> smoothed reading / threshold (> 1 = allocated)
+        self.refresh_nodes()
+
+    def refresh_nodes(self):
+        """(Re)read the node list: builds add cluster jewel nodes to the tree."""
+        tree = self.tree
         self.nodes = [n for n in tree.nodes.values() if not n.ascendancy and n.kind != "start"]
         self.xy = np.array([(n.x, n.y) for n in self.nodes])
         self.radius = np.array([n.radius for n in self.nodes])

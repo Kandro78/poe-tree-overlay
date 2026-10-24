@@ -138,6 +138,42 @@ class Route(unittest.TestCase):
         self.assertTrue(set(later).isdisjoint(first[:5]))
 
 
+class Clusters(unittest.TestCase):
+    def setUp(self):
+        from treeoverlay.cluster import ClusterLayout
+        self.layout = ClusterLayout
+        builds = [b for b in Path.home().glob("Documents/Path of Building/Builds/**/*.xml")
+                  if any(n >= 0x10000 for s in build.load(str(b))[0] for n in s.nodes)]
+        if not builds:
+            self.skipTest("no build with cluster jewels on this machine")
+        specs, active = build.load(str(builds[0]))
+        self.spec = specs[active]
+        self.tree = PassiveTree()
+
+    def test_sockets_inside_clusters_match_the_tree(self):
+        import math
+        from treeoverlay.cluster import SOCKET_SLOT
+        layout = self.layout(self.tree)
+        for (size, index, parent), sid in layout.sockets.items():
+            if size in (1, 0) and parent and sid in self.tree.nodes:
+                parent_size = 2 if size == 1 else 1
+                x, y = layout.position(int(parent), parent_size, SOCKET_SLOT[parent_size][index])
+                self.assertLess(math.dist((x, y), (self.tree.nodes[sid].x, self.tree.nodes[sid].y)), 1.0)
+
+    def test_build_cluster_nodes_are_placed_and_connected(self):
+        ids = [n for n in self.spec.nodes if n >= 0x10000]
+        placed = self.layout(self.tree).add_to_tree(self.spec.nodes)
+        self.assertEqual(sorted(placed), sorted(ids))
+        plan = Plan(self.tree, self.spec)
+        for n in ids:
+            self.assertIn(n, plan.target)
+            if n & 0xF != 12:      # masteries hang off notables, not links
+                self.assertTrue(self.tree.nodes[n].neighbours, f"cluster node {n} has no links")
+        route = plan.route(set(), len(plan.target))
+        self.assertTrue(set(ids) - {n for n in ids if n & 0xF == 12} <= set(route),
+                        "the route doesn't reach every cluster node")
+
+
 class Site(unittest.TestCase):
     def test_account_names(self):
         self.assertEqual(character.normalise_account("Some Name-1234"), "SomeName#1234")
