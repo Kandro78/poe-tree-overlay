@@ -23,6 +23,7 @@ class Spec:
     nodes: list
     tree_version: str = ""
     masteries: dict = field(default_factory=dict)  # mastery node -> effect id
+    ascend_id: int = 0  # PoB's ascendClassId: 1-based index into the class's ascendancies, 0 = none
 
 
 def _b64decode(text):
@@ -49,6 +50,7 @@ def specs_from_xml(xml_text):
             title=spec.get("title") or f"Tree {i}",
             class_id=int(spec.get("classId") or 0),
             nodes=nodes,
+            ascend_id=int(spec.get("ascendClassId") or 0),
             tree_version=spec.get("treeVersion") or "",
             masteries=masteries,
         ))
@@ -63,12 +65,13 @@ def spec_from_tree_url(url, title="Tree URL"):
     data = _b64decode(m.group(1))
     version = struct.unpack(">I", data[:4])[0]
     class_id = data[4]
+    ascend_id = data[5] & 0x3   # low bits: ascendancy; high bits: bloodline
     if version <= 3:
         raise ValueError(f"tree URL version {version} is too old")
     if version == 4:
         # version, class, ascendancy, fullscreen flag, then uint16 nodes to the end
         nodes = list(struct.unpack(f">{(len(data) - 7) // 2}H", data[7:7 + (len(data) - 7) // 2 * 2]))
-        return Spec(title, class_id, nodes)
+        return Spec(title, class_id, nodes, ascend_id=ascend_id)
     pos = 6
     count = data[pos]; pos += 1
     nodes = list(struct.unpack(f">{count}H", data[pos:pos + 2 * count])); pos += 2 * count
@@ -81,7 +84,7 @@ def spec_from_tree_url(url, title="Tree URL"):
         for _ in range(count):
             effect, node = struct.unpack(">HH", data[pos:pos + 4]); pos += 4
             masteries[node] = effect
-    return Spec(title, class_id, nodes, masteries=masteries)
+    return Spec(title, class_id, nodes, masteries=masteries, ascend_id=ascend_id)
 
 
 def _fetch(url):

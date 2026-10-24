@@ -118,6 +118,16 @@ class PassiveTree:
                     out.append((a, b))
         return out
 
+    def edges_ascendancy(self, node_ids):
+        """Connections between ascendancy nodes in node_ids."""
+        ids = set(node_ids)
+        return [(a, b) for a in ids for b in self.nodes[a].neighbours if b > a and b in ids]
+
+    def ascendancy_name(self, class_id, ascend_id):
+        """PoB's ascendClassId (1-based) to the ascendancy's name, or None."""
+        ascs = self.raw["classes"][class_id].get("ascendancies", [])
+        return ascs[ascend_id - 1]["id"] if 0 < ascend_id <= len(ascs) else None
+
     def arc(self, a, b):
         """For two nodes on the same orbit of the same group the game draws an
         arc instead of a straight line. Returns (cx, cy, r, start, sweep) in

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, 
                                QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget)
 
 from . import build, character, updater
+from .ascendancy import AscendancyFinder
 from .capture import Capture
 from .picker import TreePicker
 from .progress import AllocationReader, Plan, merge_allocations
@@ -118,6 +119,8 @@ class Worker(QThread):
     # Transform or None, game rect, (allocated, seen, covered rects) or None,
     # (cursor x, cursor y, left button down) at the moment of the capture
     located = Signal(object, object, object, object)
+    # ascendancy panel: (Transform, (x, y, radius)) while it's open, else None
+    asc_located = Signal(object)
     status = Signal(str)
 
     def __init__(self, settings, tree):
@@ -127,6 +130,8 @@ class Worker(QThread):
         self.enabled = True
         self.tracker = Tracker(settings["mask_rects"])
         self.reader = AllocationReader(tree, self.tracker.mask_rects)
+        self.asc = AscendancyFinder(tree, self.tracker.mask_rects)
+        self._asc_open = False
         self._stop = False
 
     def stop(self):
@@ -136,8 +141,7 @@ class Worker(QThread):
         render = DATA_DIR / "render_0.2972.png"
         if not render.exists():
             self.status.emit("Rendering the reference tree (first start only)…")
-            sys.path.insert(0, str(ROOT / "tools"))
-            import render_tree
+            from . import render as render_tree
             img, meta = render_tree.render(PassiveTree())
             import cv2
             cv2.imwrite(str(render), img)
@@ -194,6 +198,9 @@ class Worker(QThread):
             self.status.emit("Path of Exile window not found")
             time.sleep(1.0)
             return
+        if isinstance(req, tuple) and req[0] == "ascendancy":
+            self.asc.set_ascendancy(req[1])
+            req = None
         if req == "reset":
             self.tracker.reset()
             self.reader.reset()
@@ -231,6 +238,15 @@ class Worker(QThread):
                 and not self.tracker.last_static and not self.tracker.last_fast):
             self.reader.update(frame, t)
             progress = (frozenset(self.reader.allocated), frozenset(self.reader.seen), list(self.reader.covered_rects))
+        # the ascendancy panel: not while dragging (the search takes ~80 ms)
+        if t is not None and not cursor[2] and not self.tracker.last_fast:
+            asc_t = self.asc.update(frame)
+            if asc_t is not None or self._asc_open:
+                self._asc_open = asc_t is not None
+                self.asc_located.emit((asc_t, self.asc.circle) if asc_t is not None else None)
+        elif t is None and self._asc_open:
+            self._asc_open = False
+            self.asc_located.emit(None)
         self._dump(frame, t)
         if t is not None:
             trace(k="track", tc=cursor[3], tg=grabbed, done=clock(), cx=cursor[0], cy=cursor[1], down=cursor[2],
@@ -283,6 +299,9 @@ class Overlay(QWidget):
         self.status = None           # Plan.status() result, None until something was read
         self.covered_rects = []      # screen areas a game tooltip covers right now
         self.route = []              # the next points to take, in order
+        self.allocated = frozenset()
+        self.asc = None              # (Transform, (x, y, radius)) of the open ascendancy panel
+        self.asc_nodes = []
         self.transform = None
         self.rect_px = None
         self.message = ""            # calibration prompts
@@ -308,6 +327,9 @@ class Overlay(QWidget):
 
     def set_spec(self, spec):
         self.plan = Plan(self.tree, spec)
+        name = self.tree.ascendancy_name(spec.class_id, spec.ascend_id)
+        self.asc_nodes = [self.tree.nodes[n] for n in spec.nodes
+                          if n in self.tree.nodes and name and self.tree.nodes[n].ascendancy == name]
         self.nodes = [self.tree.nodes[n] for n in self.plan.target]
         self.edges = self.tree.edges(list(self.plan.target) + [self.plan.start])
         self.status = None
@@ -318,6 +340,7 @@ class Overlay(QWidget):
         if self.plan is None or progress is None:
             return
         allocated, seen, self.covered_rects = progress
+        self.allocated = allocated
         self.status = self.plan.status(allocated, seen) if seen else None
         self.route = self.plan.route(self.status["done"], self.settings["route_length"]) if self.status else []
 
@@ -561,6 +584,9 @@ class Overlay(QWidget):
             clip -= QRegion(int(x0 * w), int(y0 * h), int((x1 - x0) * w) + 1, int((y1 - y0) * h) + 1)
         for x, y, rw, rh in self.covered_rects:
             clip -= QRegion(QRect(int(x), int(y), int(rw), int(rh)))
+        if self.asc is not None:      # the ascendancy panel covers the tree there
+            cx, cy, r = self.asc[1]
+            clip -= QRegion(int(cx - r), int(cy - r), int(2 * r), int(2 * r), QRegion.Ellipse)
         p.setClipRegion(clip)
         s = t.scale
         st = self.status
@@ -634,6 +660,29 @@ class Overlay(QWidget):
             p.drawText(QRectF(x - br, y - br, 2 * br, 2 * br), Qt.AlignCenter, str(number))
         p.setBrush(Qt.NoBrush)
         p.restore()
+        self._draw_ascendancy(p)
+
+    def _draw_ascendancy(self, p):
+        if self.asc is None or not self.asc_nodes:
+            return
+        t = self.asc[0]
+        s = t.scale
+        for n in self.asc_nodes:
+            x, y = t.to_screen(n.x, n.y)
+            r = n.radius * s * 1.2
+            color = QColor(255, 200, 60) if n.kind == "notable" else QColor(80, 220, 255)
+            if n.id in self.allocated:
+                color.setAlpha(80)
+                p.setPen(QPen(color, max(1.5, 5 * s)))
+            else:
+                p.setPen(QPen(color, max(3.0, 12 * s)))
+            p.drawEllipse(QPointF(x, y), r, r)
+            if n.kind == "notable" and n.id not in self.allocated and self.settings["show_labels"]:
+                self._label(p, x + r + 6, y, n.name, QColor(255, 225, 140), 11)
+
+    def set_ascendancy_panel(self, found):
+        self.asc = found
+        self.update()
 
     def progress_text(self):
         """One line for the picker: how far the character is with this tree."""
@@ -729,6 +778,7 @@ class ControlWindow(QWidget):
         self.picker.chosen.connect(self.spec_box.setCurrentIndex)
         self.picker.reread.connect(self.reread)
         self.worker.located.connect(self.on_located)
+        self.worker.asc_located.connect(self.overlay.set_ascendancy_panel)
         self.worker.status.connect(self.status.setText)
         if os.environ.get("TREEOVERLAY_LOG"):
             self.worker.status.connect(lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
@@ -893,6 +943,7 @@ class ControlWindow(QWidget):
         save_settings(self.settings)
         self.overlay.set_spec(self.spec)
         self.picker.set_specs(self.specs, idx)
+        self.worker.requests.put(("ascendancy", self.tree.ascendancy_name(self.spec.class_id, self.spec.ascend_id)))
         self.picker.show_toast(f"Switched to tree {idx + 1}/{len(self.specs)}")
         known = [n for n in self.spec.nodes if n in self.tree.nodes]
         kinds = [self.tree.nodes[n].kind for n in known if not self.tree.nodes[n].ascendancy]

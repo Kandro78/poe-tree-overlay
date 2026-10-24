@@ -115,7 +115,9 @@ class Tracker:
         return self.transform is not None or len(self.map_pts) > 0
 
     # -- reference map from the rendered tree -----------------------------
-    def load_reference(self, render_png, meta, cache=None):
+    REFERENCE_LEVELS = (0.54, 0.40, 0.30, 0.225, 0.17, 0.125)
+
+    def load_reference(self, render_png, meta, cache=None, levels=None):
         """Seed the map with features of the tree rendered from the game's own
         sprites, so the tree can be found without manual calibration."""
         if cache and Path(cache).exists():
@@ -127,13 +129,13 @@ class Tracker:
             orb = cv2.ORB_create(nfeatures=2500, scaleFactor=1.2, nlevels=8, fastThreshold=12)
             all_pts, all_desc, all_scale = [], [], []
             # feature scale = pixels per tree unit in the downscaled work image
-            for k in (0.54, 0.40, 0.30, 0.225, 0.17, 0.125):
+            for k in levels or self.REFERENCE_LEVELS:
                 level = cv2.resize(img, None, fx=k, fy=k, interpolation=cv2.INTER_AREA) if k != 1 else img
                 tile, step = 1280, 1024
                 for y in range(0, level.shape[0], step):
                     for x in range(0, level.shape[1], step):
                         part = level[y:y + tile, x:x + tile]
-                        if part.shape[0] < 200 or part.shape[1] < 200:
+                        if part.shape[0] < 64 or part.shape[1] < 64:
                             continue
                         kps, desc = orb.detectAndCompute(part, None)
                         if desc is None:

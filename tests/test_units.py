@@ -18,7 +18,7 @@ from treeoverlay.tree import PassiveTree  # noqa: E402
 TREE = PassiveTree()
 XML = """<PathOfBuilding><Tree activeSpec="2">
   <Spec title="Act 1" classId="3" treeVersion="3_29" nodes="54447,36774,17579" masteryEffects=""/>
-  <Spec title="Maps" classId="3" treeVersion="3_29" nodes="54447,36774,17579,33296" masteryEffects="{28680,61071}"/>
+  <Spec title="Maps" classId="3" ascendClassId="2" treeVersion="3_29" nodes="54447,36774,17579,33296" masteryEffects="{28680,61071}"/>
 </Tree></PathOfBuilding>"""
 
 
@@ -37,6 +37,8 @@ class BuildInput(unittest.TestCase):
         self.assertEqual([s.title for s in specs], ["Act 1", "Maps"])
         self.assertEqual(active, 1)
         self.assertEqual(specs[1].masteries, {28680: 61071})
+        self.assertEqual(TREE.ascendancy_name(specs[1].class_id, specs[1].ascend_id), "Elementalist")
+        self.assertIsNone(TREE.ascendancy_name(specs[0].class_id, specs[0].ascend_id))
 
     def test_pob_code(self):
         code = base64.urlsafe_b64encode(zlib.compress(XML.encode())).decode()
