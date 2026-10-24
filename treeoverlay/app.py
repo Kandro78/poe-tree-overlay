@@ -28,7 +28,7 @@ from .tree import CLASS_NAMES, DATA_DIR, PassiveTree
 
 ROOT = DATA_DIR.parent
 SETTINGS = ROOT / "settings.json"
-DEFAULTS = {"last_input": "", "spec": -1, "mask_rects": None, "fps": 8, "show_progress": True,
+DEFAULTS = {"last_input": "", "spec": -1, "mask_rects": None, "ui_scale": 1.0, "fps": 8, "show_progress": True,
             "account": "", "character": "", "realm": "pc",
             "show_labels": True, "route_length": 8, "auto_next_tree": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
 
@@ -216,8 +216,12 @@ class Worker(QThread):
             time.sleep(0.2)
             return
         if rect[2:] != getattr(self, "_gate_size", None):
+            # a new window size: HUD areas follow it (and the in-game UI scale)
             self._gate_size = rect[2:]
-            self.tracker.use_gate_file(DATA_DIR / f"gate_{rect[2]}x{rect[3]}.png", (rect[3], rect[2]))
+            ui = float(self.settings.get("ui_scale", 1.0))
+            self.tracker.fit_to_window(rect[2], rect[3], ui)
+            suffix = "" if ui == 1.0 else f"_ui{int(round(ui * 100))}"
+            self.tracker.use_gate_file(DATA_DIR / f"gate_{rect[2]}x{rect[3]}{suffix}.png", (rect[3], rect[2]))
         cursor = (*cursor_pos(), bool(user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000), clock())
         self._t_capture = time.time()
         frame, fresh = sct.grab(rect)

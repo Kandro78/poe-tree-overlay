@@ -78,7 +78,10 @@ class Tracker:
     def __init__(self, mask_rects=None):
         self.orb = cv2.ORB_create(nfeatures=2500, scaleFactor=1.2, nlevels=8, fastThreshold=12)
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
-        self.mask_rects = self.POE_HUD if mask_rects is None else mask_rects
+        # a list of its own: the worker updates it in place when the window size changes,
+        # and the allocation reader and ascendancy finder share it
+        self.mask_rects = list(self.POE_HUD) if mask_rects is None else mask_rects
+        self.auto_masks = mask_rects is None
         self.gate, self.gate_shape, self.gate_path = None, None, None
         self.gate_candidate, self.gate_off = None, False
         self.reset()
@@ -239,6 +242,13 @@ class Tracker:
     GATE_LEARN_REF = 150
     GATE_MIN_SCORE = 0.7
 
+    def fit_to_window(self, w, h, ui_scale=1.0):
+        """HUD masks and header patch for this window size (unless masks were given)."""
+        from .hud import gate_rect, ui_rects
+        if self.auto_masks:
+            self.mask_rects[:] = ui_rects(w, h, ui_scale)
+        self.GATE_RECT = gate_rect(w, h, ui_scale)
+
     def _gate_patch(self, frame, pad=0.0):
         h, w = frame.shape[:2]
         x0, y0, x1, y1 = self.GATE_RECT
@@ -293,15 +303,30 @@ class Tracker:
     def _thumb(self, frame):
         """Small grey copy with the HUD flattened, for cheap frame-to-frame checks."""
         h, w = frame.shape[:2]
-        f = self.THUMB_WIDTH / w
+        f = self.THUMB_HEIGHT / h     # by height: wide screens get a wider thumbnail, not a coarser one
         g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-        g = cv2.resize(g, (self.THUMB_WIDTH, int(h * f)), interpolation=cv2.INTER_AREA).astype(np.float32)
+        g = cv2.resize(g, (int(w * f), self.THUMB_HEIGHT), interpolation=cv2.INTER_AREA).astype(np.float32)
         th, tw = g.shape
         for x0, y0, x1, y1 in self.mask_rects:
             g[int(th * y0):int(th * y1), int(tw * x0):int(tw * x1)] = 0
         return g, f
 
-    THUMB_WIDTH = 480
+    def _pan_window(self, shape):
+        """Weights for phase correlation: a Hann window that also fades to zero
+        over the HUD, with soft edges. HUD that never moves (and a hard mask
+        border) would otherwise pull every pan estimate towards zero."""
+        key = (shape, tuple(map(tuple, self.mask_rects)))
+        if self._hann is None or self._hann[0] != key:
+            th, tw = shape
+            valid = np.ones(shape, np.float32)
+            for x0, y0, x1, y1 in self.mask_rects:
+                valid[int(th * y0):int(th * y1) + 1, int(tw * x0):int(tw * x1) + 1] = 0
+            valid = cv2.erode(valid, np.ones((7, 7), np.uint8))
+            valid = cv2.GaussianBlur(valid, (0, 0), 3)
+            self._hann = (key, cv2.createHanningWindow((tw, th), cv2.CV_32F) * valid)
+        return self._hann[1]
+
+    THUMB_HEIGHT = 270
 
     def _localise(self, frame):
         self.last_path = "?"
@@ -327,10 +352,8 @@ class Tracker:
             # the full check instead.
             may_trust = (self.last_diff >= self.STATIC_DIFF and
                          time.perf_counter() - self.last_verified < self.VERIFY_EVERY)
-            if self._hann is None or self._hann.shape != thumb.shape:
-                self._hann = cv2.createHanningWindow(thumb.shape[::-1], cv2.CV_32F)
             # phaseCorrelate applies the window to its inputs in place: give it copies
-            (dx, dy), resp = cv2.phaseCorrelate(prev.copy(), thumb.copy(), self._hann)
+            (dx, dy), resp = cv2.phaseCorrelate(prev.copy(), thumb.copy(), self._pan_window(thumb.shape).copy())
             if resp > 0.15:
                 shift = (dx / tf, dy / tf)
             t0 = self.transform
