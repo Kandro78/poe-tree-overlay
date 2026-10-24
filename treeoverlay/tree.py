@@ -5,10 +5,17 @@ x grows to the right, y grows downwards, origin roughly at the Scion start.
 """
 import json
 import math
+import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+if getattr(sys, "frozen", False):
+    # the packaged app can't write next to itself: data and settings go to %APPDATA%
+    DATA_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "PoE Tree Overlay" / "data"
+else:
+    DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Orbits with 16 / 40 slots are not evenly spaced (skilltree-export README, 3.17+).
 _SPECIAL_ANGLES = {

@@ -14,9 +14,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtCore import QRect
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QRegion
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel,
-                               QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget)
+                               QLineEdit, QMenu, QMessageBox, QProgressDialog, QPushButton, QSystemTrayIcon,
+                               QVBoxLayout, QWidget)
 
 from . import build, character, updater
 from .ascendancy import AscendancyFinder
@@ -24,12 +25,14 @@ from .capture import Capture
 from .cluster import ClusterLayout
 from .picker import TreePicker
 from .progress import AllocationReader, Plan, merge_allocations
+from .settings_dialog import SettingsDialog
 from .tracker import Tracker, Transform
 from .tree import CLASS_NAMES, DATA_DIR, PassiveTree
 
 ROOT = DATA_DIR.parent
 SETTINGS = ROOT / "settings.json"
 DEFAULTS = {"last_input": "", "spec": -1, "mask_rects": None, "ui_scale": 1.0, "fps": 8, "show_progress": True,
+            "start_minimized": False,
             "account": "", "character": "", "realm": "pc",
             "show_labels": True, "route_length": 8, "auto_next_tree": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
 
@@ -43,6 +46,19 @@ LABEL_ZOOM = 0.3   # from this zoom on, all remaining notables/masteries get a l
 
 COLORS = {"normal": QColor(80, 220, 255), "notable": QColor(255, 200, 60), "keystone": QColor(255, 90, 60),
           "mastery": QColor(200, 120, 255), "jewel": QColor(120, 255, 140), "start": QColor(80, 220, 255)}
+
+
+def app_icon():
+    pix = QPixmap(64, 64)
+    pix.fill(Qt.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(QPen(QColor(255, 200, 60), 9))
+    p.drawEllipse(10, 10, 44, 44)
+    p.setPen(QPen(QColor(80, 220, 255), 5))
+    p.drawEllipse(24, 24, 16, 16)
+    p.end()
+    return QIcon(pix)
 
 
 def load_settings():
@@ -71,7 +87,7 @@ def find_game():
         if user32.IsWindowVisible(h) and not user32.IsIconic(h):
             buf = ctypes.create_unicode_buffer(256)
             user32.GetClassNameW(h, buf, 256)
-            if buf.value == "POEWindowClass":
+            if buf.value == "POEWindowClass" and not os.environ.get("TREEOVERLAY_FAKE_GAME"):
                 found.insert(0, h)
             else:
                 user32.GetWindowTextW(h, buf, 256)
@@ -202,6 +218,9 @@ class Worker(QThread):
         if isinstance(req, tuple) and req[0] == "ascendancy":
             self.asc.set_ascendancy(req[1])
             self.reader.refresh_nodes()       # a new build may have brought cluster jewel nodes
+            req = None
+        if req == "refit":
+            self._gate_size = None
             req = None
         if req == "reset":
             self.tracker.reset()
@@ -731,6 +750,7 @@ class ControlWindow(QWidget):
         cal_btn = QPushButton(f"Calibrate ({self.settings['keys']['calibrate']})")
         reset_btn = QPushButton(f"Clear learned map ({self.settings['keys']['reset']})")
         update_btn = QPushButton("Update tree data")
+        settings_btn = QPushButton("Settings…")
         self.labels_box = QCheckBox("Labels")
         self.labels_box.setChecked(self.settings["show_labels"])
         self.progress_box = QCheckBox("Track allocated passives")
@@ -752,6 +772,7 @@ class ControlWindow(QWidget):
         row_site.addWidget(chars_btn); row_site.addWidget(self.char_box)
         row3 = QHBoxLayout(); row3.addWidget(self.show_box); row3.addWidget(self.progress_box); row3.addWidget(self.labels_box)
         row3.addStretch(); row3.addWidget(cal_btn); row3.addWidget(reset_btn); row3.addWidget(update_btn)
+        row3.addWidget(settings_btn)
         lay = QVBoxLayout(self)
         for r in (row, row2, row_site):
             lay.addLayout(r)
@@ -799,6 +820,9 @@ class ControlWindow(QWidget):
         cal_btn.clicked.connect(self.start_calibration)
         reset_btn.clicked.connect(lambda: self.worker.requests.put("reset"))
         update_btn.clicked.connect(self.update_tree_data)
+        settings_btn.clicked.connect(self.open_settings)
+        self.setWindowIcon(app_icon())
+        self._make_tray()
         self.labels_box.toggled.connect(lambda on: self._setting("show_labels", on))
         chars_btn.clicked.connect(self.get_characters)
         self.account.returnPressed.connect(self.get_characters)
@@ -898,6 +922,59 @@ class ControlWindow(QWidget):
             self.picker.set_progress(self.overlay.progress_text())
             self.overlay.update()
             self._maybe_next_tree()
+
+    # -- tray and settings ----------------------------------------------------------
+    def _make_tray(self):
+        self.quitting = False
+        self.tray = QSystemTrayIcon(app_icon(), self)
+        self.tray.setToolTip("PoE Tree Overlay")
+        menu = QMenu()
+        for text, slot in (("Show window", self.show_window), ("Re-read allocated passives", self.reread),
+                           ("Settings…", self.open_settings)):
+            act = QAction(text, menu)
+            act.triggered.connect(slot)
+            menu.addAction(act)
+        self.tray_overlay = QAction("Show overlay", menu, checkable=True, checked=self.show_box.isChecked())
+        self.tray_overlay.toggled.connect(self.show_box.setChecked)
+        self.show_box.toggled.connect(self.tray_overlay.setChecked)
+        menu.addAction(self.tray_overlay)
+        menu.addSeparator()
+        quit_act = QAction("Quit", menu)
+        quit_act.triggered.connect(self.quit)
+        menu.addAction(quit_act)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(lambda reason: self.show_window()
+                                    if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
+        self.tray.show()
+        self._tray_hint_shown = False
+
+    def show_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def open_settings(self):
+        dlg = SettingsDialog(self.settings, self)
+        if not dlg.exec():
+            return
+        new = dlg.values()
+        ui_changed = new["ui_scale"] != self.settings["ui_scale"]
+        realm_changed = new["realm"] != self.settings["realm"]
+        self.settings.update(new)
+        save_settings(self.settings)
+        self.labels_box.setChecked(new["show_labels"])
+        self.progress_box.setChecked(new["show_progress"])
+        if ui_changed:
+            self.worker.requests.put("refit")
+        if realm_changed:
+            self.refresh_site(force=True)
+        if self.spec is not None:
+            self.overlay.set_spec(self.spec)
+        self.overlay.update()
+
+    def quit(self):
+        self.quitting = True
+        self.close()
 
     def _setting(self, key, value):
         self.settings[key] = value
@@ -1037,6 +1114,8 @@ class ControlWindow(QWidget):
     def poll_keys(self):
         keys = self.settings["keys"]
         for action, name in keys.items():
+            if not name:
+                continue
             down = bool(user32.GetAsyncKeyState(VK.get(name, 0)) & 0x8000)
             if down and not self.key_state.get(action):
                 if action == "calibrate":
@@ -1051,6 +1130,16 @@ class ControlWindow(QWidget):
             self.key_state[action] = down
 
     def closeEvent(self, e):
+        if not self.quitting and self.tray.isVisible():
+            # keep running in the tray; Quit is in the tray icon's menu
+            e.ignore()
+            self.hide()
+            if not self._tray_hint_shown:
+                self._tray_hint_shown = True
+                self.tray.showMessage("PoE Tree Overlay", "Still running here. Right-click for Quit.",
+                                      app_icon(), 4000)
+            return
+        self.tray.hide()
         self.worker.stop()
         self.worker.wait(2000)
         self.overlay.close()
@@ -1058,23 +1147,51 @@ class ControlWindow(QWidget):
         super().closeEvent(e)
 
 
-def ensure_tree_data():
-    """A fresh checkout has no tree data: fetch it once."""
-    if not (DATA_DIR / "data.json").exists():
-        print("Downloading the passive tree data (first start only)…", flush=True)
-        (DATA_DIR / "sprites").mkdir(parents=True, exist_ok=True)
-        updater.update()
+def ensure_tree_data(app):
+    """A fresh install has no tree data: fetch it once, with a progress window."""
+    if (DATA_DIR / "data.json").exists():
+        return True
+    (DATA_DIR / "sprites").mkdir(parents=True, exist_ok=True)
+    dlg = QProgressDialog("Downloading the passive tree from GGG (first start only)…", None, 0, 0)
+    dlg.setWindowTitle("PoE Tree Overlay")
+    dlg.setWindowIcon(app_icon())
+    dlg.show()
+    result = {}
+
+    def run():
+        try:
+            updater.update(log=lambda line: result.__setitem__("line", line))
+        except Exception as exc:          # no network, GitHub down, ...
+            result["error"] = str(exc)
+        result["done"] = True
+
+    threading.Thread(target=run, daemon=True).start()
+    while "done" not in result:
+        if "line" in result:
+            dlg.setLabelText(result["line"])
+        app.processEvents()
+        time.sleep(0.03)
+    dlg.close()
+    if "error" in result:
+        QMessageBox.critical(None, "PoE Tree Overlay", f"Couldn't download the passive tree data:\n{result['error']}")
+        return False
+    return True
 
 
 def main():
-    ensure_tree_data()
     # 1 ms timer resolution: the cursor sampling and repaint timers (8 ms)
     # otherwise tick at Windows' default 15.6 ms
     winmm = ctypes.windll.winmm
     winmm.timeBeginPeriod(1)
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)    # it lives on in the tray
+    app.setWindowIcon(app_icon())
     app.aboutToQuit.connect(lambda: winmm.timeEndPeriod(1))
+    if not ensure_tree_data(app):
+        sys.exit(1)
     w = ControlWindow()
+    w.destroyed.connect(app.quit)
+    w.setAttribute(Qt.WA_DeleteOnClose)
     if w.settings.get("start_minimized") or os.environ.get("TREEOVERLAY_MINIMIZED"):
         w.showMinimized()   # stay out of the game's way
     else:

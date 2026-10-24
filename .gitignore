@@ -10,3 +10,6 @@ data/data.json
 data/version.txt
 data/sprites/
 data/asc_*
+build/
+dist/
+soak.csv
