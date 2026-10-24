@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+settings.json
+data/render_*.png
+data/render_*.json
+data/refmap.npz
+data/gate_*.png
+# downloaded tree data, fetched by treeoverlay/updater.py on first start
+data/data.json
+data/version.txt
+data/sprites/
