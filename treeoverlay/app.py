@@ -282,7 +282,7 @@ class Worker(QThread):
                          f"{'' if self.tracker.gate is not None else ' · learning tree screen'}")
         # while the picture changes, go again right away; when it stands still, idle
         moving = t is not None and (not self.tracker.last_static or cursor[2])   # button down: a drag may start
-        pause = 0.0 if moving else 1.0 / self.settings["fps"]
+        pause = 1.0 / 60 if moving else 1.0 / self.settings["fps"]   # at most 60 updates/s while moving
         if t is None and self.tracker.gate is None and self.tracker.lost_frames > 3:
             pause = 0.5   # nothing learned yet to tell if the tree is open: search less often
         time.sleep(max(0.0, pause - (time.perf_counter() - t0)))

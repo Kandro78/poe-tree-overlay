@@ -23,6 +23,9 @@ import cv2
 import numpy as np
 
 
+# two threads are plenty for these image sizes; all cores would make the game share its CPU
+cv2.setNumThreads(2)
+
 _POPCOUNT = np.array([bin(i).count("1") for i in range(256)], np.uint8)
 _KEY = 1 << 24   # packs a 2D grid cell into one int64
 
