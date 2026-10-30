@@ -1,4 +1,6 @@
 -- macOS-style look for Path of Building, installed by PoE Tree Overlay.
+-- Dark by default; %APPDATA%/PoE Tree Overlay/pob_theme.cfg with light=1
+-- switches to the light palette (and dark text on it).
 --
 -- PoB draws every box the same way: the border as a filled rectangle, then the
 -- fill one pixel inside it. This module wraps PoB's drawing functions, spots
@@ -18,6 +20,15 @@ local realDrawString, realSetDrawLayer, realSetViewport = DrawString, SetDrawLay
 local disc = NewImageHandle()
 disc:Load("Assets/PoETreeOverlay_round.png", "CLAMP")
 
+local LIGHT = false
+do
+	local f = io.open((os.getenv("APPDATA") or ".") .. "/PoE Tree Overlay/pob_theme.cfg", "r")
+	if f then
+		LIGHT = (f:read("*a") or ""):find("light=1", 1, true) ~= nil
+		f:close()
+	end
+end
+
 -- PoB grey -> macOS dark grey. PoB's light greys (0.66-0.85) are frames and
 -- dividers between panels: those become quiet separators.
 local GREYS = {
@@ -31,10 +42,24 @@ local GREYS = {
 	{ 0.99, 0.173, 0.173, 0.180 },
 	{ 1.00, 1.000, 1.000, 1.000 },
 }
-local ACCENT = { 0.039, 0.518, 1.0 }       -- #0a84ff
-local CONTROL = { 0.173, 0.173, 0.180 }    -- #2c2c2e: buttons, fields, drop-downs
-local CONTROL_HOVER = { 0.227, 0.227, 0.235 }
+if LIGHT then
+	GREYS = {
+		{ 0.00, 0.925, 0.925, 0.929 },   -- #ececed window
+		{ 0.10, 0.961, 0.961, 0.965 },   -- #f5f5f6 panels
+		{ 0.15, 0.973, 0.973, 0.976 },
+		{ 0.33, 0.902, 0.902, 0.906 },   -- #e6e6e7
+		{ 0.50, 0.780, 0.780, 0.788 },   -- #c7c7c9 borders
+		{ 0.66, 0.780, 0.780, 0.788 },
+		{ 0.85, 0.851, 0.851, 0.859 },   -- #d9d9db separators
+		{ 0.99, 0.851, 0.851, 0.859 },
+		{ 1.00, 0.640, 0.640, 0.650 },   -- white fills (scrollbar thumbs): mid grey
+	}
+end
+local ACCENT = LIGHT and { 0.0, 0.478, 1.0 } or { 0.039, 0.518, 1.0 }    -- #0a84ff / #007aff
+local CONTROL = LIGHT and { 1.0, 1.0, 1.0 } or { 0.173, 0.173, 0.180 }   -- buttons, fields, drop-downs
+local CONTROL_HOVER = LIGHT and { 0.918, 0.918, 0.925 } or { 0.227, 0.227, 0.235 }
 local COLOURED = 0.6                       -- how much of a coloured frame's colour is kept
+local TINT_FILL = LIGHT and 0.22 or 0.6    -- same for filled rows: pastel on the light palette
 
 local function grey(v)
 	local lo = GREYS[1]
@@ -72,6 +97,10 @@ local tint             -- {r, g, b} of an opaque colour set by string, if not a 
 local pending          -- a border waiting for its fill
 
 function SetDrawColor(r, g, b, a)
+	-- light mode: PoB's translucent near-black veils (tooltips, dimmers) go light
+	if LIGHT and type(r) == "number" and a ~= nil and a < 1 and a >= 0.4 and r == g and g == b and r <= 0.2 then
+		r, g, b = 0.97, 0.97, 0.975
+	end
 	lr, lg, lb, la = r, g, b, a
 	tint = nil
 	local pr, pg, pb, opaque = r, g, b, a == nil or a >= 1
@@ -123,9 +152,10 @@ local function radius(w, h)
 end
 
 -- a coloured frame or row tint, part way towards the panel grey
-local function toned(c)
+local function toned(c, k)
+	k = k or COLOURED
 	local gr, gg, gb = grey(0.1)
-	return gr + (c[1] - gr) * COLOURED, gg + (c[2] - gg) * COLOURED, gb + (c[3] - gb) * COLOURED
+	return gr + (c[1] - gr) * k, gg + (c[2] - gg) * k, gb + (c[3] - gb) * k
 end
 
 local function setBorder(b)
@@ -157,7 +187,11 @@ local function flush()
 	local b = pending
 	if b then
 		pending = nil
-		setBorder(b)
+		if b.tint then
+			realSetDrawColor(toned(b.tint, TINT_FILL))
+		else
+			setBorder(b)
+		end
 		realDrawImage(nil, b.x, b.y, b.w, b.h)
 		restore()
 	end
@@ -182,7 +216,7 @@ function DrawImage(handle, x, y, w, h, ...)
 			return
 		end
 		if tint then
-			realSetDrawColor(toned(tint))
+			realSetDrawColor(toned(tint, TINT_FILL))
 		else
 			realSetDrawColor(grey(cr))
 		end
@@ -206,9 +240,62 @@ if realDrawImageRotated then
 	end
 end
 
-function DrawString(...)
+-- Light mode text: PoB writes white on dark, so light greys flip to dark text
+-- and bright colours dim until they read on the light panels. The passive tree
+-- is drawn with PoB's own functions and keeps its own colours.
+local function textColour(r, g, b)
+	if r == g and g == b then
+		local v = math.min(r, 1.08 - r)
+		return v, v, v
+	end
+	local lum = 0.299 * r + 0.587 * g + 0.114 * b
+	if lum > 0.62 then
+		return r * 0.62 / lum, g * 0.62 / lum, b * 0.62 / lum
+	end
+	return r, g, b
+end
+
+local CODES = { ["0"] = { 0, 0, 0 }, ["1"] = { 1, 0, 0 }, ["2"] = { 0, 1, 0 }, ["3"] = { 0, 0, 1 },
+	["4"] = { 1, 1, 0 }, ["5"] = { 1, 0, 1 }, ["6"] = { 0, 1, 1 }, ["7"] = { 1, 1, 1 },
+	["8"] = { 0.7, 0.7, 0.7 }, ["9"] = { 0.4, 0.4, 0.4 } }
+
+local function mapEscape(r, g, b)
+	r, g, b = textColour(r, g, b)
+	return string.format("^x%02X%02X%02X",
+		math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5))
+end
+
+local function mapCodes(text)
+	text = text:gsub("%^x(%x%x%x%x%x%x)", function(hex)
+		return mapEscape(tonumber(hex:sub(1, 2), 16) / 255,
+			tonumber(hex:sub(3, 4), 16) / 255, tonumber(hex:sub(5, 6), 16) / 255)
+	end)
+	return (text:gsub("%^(%d)", function(d)
+		local c = CODES[d]
+		return c and mapEscape(c[1], c[2], c[3]) or ("^" .. d)
+	end))
+end
+
+function DrawString(x, y, align, h, font, text)
 	flush()
-	return realDrawString(...)
+	if LIGHT and type(text) == "string" then
+		local pr, pg, pb = lr, lg, lb
+		if type(lr) == "string" then
+			pr, pg, pb = parse(lr)
+		end
+		if type(pr) == "number" and type(pb) == "number" then
+			local tr, tg, tb = textColour(pr, pg, pb)
+			if type(la) == "number" then
+				realSetDrawColor(tr, tg, tb, la)
+			else
+				realSetDrawColor(tr, tg, tb)
+			end
+		end
+		realDrawString(x, y, align, h, font, mapCodes(text))
+		restore()
+		return
+	end
+	return realDrawString(x, y, align, h, font, text)
 end
 
 function SetDrawLayer(...)

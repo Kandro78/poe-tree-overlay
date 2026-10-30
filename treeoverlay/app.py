@@ -1,6 +1,7 @@
 """Control window + click-through overlay over the Path of Exile window."""
 import ctypes
 import ctypes.wintypes as wt
+import faulthandler
 import json
 import math
 import os
@@ -27,6 +28,7 @@ from .cluster import ClusterLayout
 from .picker import TreePicker
 from .progress import AllocationReader, Plan, merge_allocations
 from .settings_dialog import SettingsDialog
+from . import __version__
 from .tracker import Tracker, Transform
 from .tree import CLASS_NAMES, DATA_DIR, PassiveTree
 from .wheel import WheelReader, ZoomPredictor
@@ -36,13 +38,14 @@ SETTINGS = ROOT / "settings.json"
 DEFAULTS = {"last_input": "", "spec": -1, "mask_rects": None, "ui_scale": 1.0, "fps": 8, "show_progress": True,
             "start_minimized": False, "appearance": "system", "follow_pob": True, "pob_title_patch": False, "pob_theme": False,
             "pob_speed": False, "pob_link": False, "pob_marks": False, "pob_keys": False,
-            "pob_gems": False,
+            "pob_gems": False, "pob_theme_light": False,
             "account": "", "character": "", "realm": "pc",
             "show_labels": True, "route_length": 8, "auto_next_tree": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
 
 # PoB change (pob_patch) -> the setting that turns it on
 POB_PATCH_SETTINGS = {"title": "pob_title_patch", "theme": "pob_theme", "speed": "pob_speed",
-                      "link": "pob_link", "marks": "pob_marks", "keys": "pob_keys", "gems": "pob_gems"}
+                      "link": "pob_link", "marks": "pob_marks", "keys": "pob_keys", "gems": "pob_gems",
+                      "light": "pob_theme_light"}
 
 user32 = ctypes.windll.user32
 VK = {f"F{i}": 0x6F + i for i in range(1, 13)}
@@ -906,6 +909,17 @@ class Overlay(QWidget):
                 text = self._mastery_text(n.id)
                 if text:
                     labels.append((0 if n.id in nxt else 1, x, y, n.radius * s * 1.15, text, QColor(220, 180, 255)))
+            # which jewel the build sockets where (also once taken: the game
+            # can't tell the overlay whether the jewel itself is in)
+            for nid, name in self.plan.spec.jewels.items():
+                n = self.tree.nodes.get(nid)
+                if n is None or n.id not in self.plan.target:
+                    continue
+                x, y = t.to_screen(n.x, n.y)
+                if not (-50 < x < w + 50 and -50 < y < h + 50):
+                    continue
+                labels.append((0 if n.id in nxt else (2 if n.id in done else 1),
+                               x, y, n.radius * s * 1.15, name, QColor(150, 255, 170)))
         # names keep clear of the game's UI and tooltips, where they'd be cut off
         taken = [QRectF(x0 * w, y0 * h, (x1 - x0) * w, (y1 - y0) * h) for x0, y0, x1, y1 in self.ui_rects]
         taken += [QRectF(x, y, rw, rh) for x, y, rw, rh in self.covered_rects]
@@ -1056,7 +1070,7 @@ class ControlWindow(QWidget):
         shown = theme.Card()
         shown.add(theme.row("Show overlay", self.show_box, key=keys["toggle"] or None))
         shown.add(theme.row("Track allocated passives", self.progress_box))
-        shown.add(theme.row("Mastery effects to pick", self.labels_box))
+        shown.add(theme.row("Mastery effects and jewels", self.labels_box))
 
         tools = QHBoxLayout(); tools.setSpacing(8)
         for b in (cal_btn, reset_btn, update_btn):
@@ -1075,7 +1089,8 @@ class ControlWindow(QWidget):
         lay.addLayout(tools)
         help_text = theme.caption(
             "Run the game in Windowed Fullscreen and open the passive tree (P): the overlay finds it by itself. "
-            "{n} switches between the build's trees.".format(n=keys["next_tree"] or "The panel on the tree screen"))
+            "{n} switches between the build's trees. v{v}".format(
+                n=keys["next_tree"] or "The panel on the tree screen", v=__version__))
         lay.addSpacing(4)
         lay.addWidget(help_text)
         self.setMinimumWidth(640)
@@ -1730,7 +1745,40 @@ def ensure_tree_data(app):
     return True
 
 
+def start_log():
+    """log.txt in the settings folder: version, environment and anything that
+    goes wrong this run (log_prev.txt keeps the run before). The file a bug
+    report should include."""
+    try:
+        SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        log, prev = SETTINGS.parent / "log.txt", SETTINGS.parent / "log_prev.txt"
+        if log.exists():
+            prev.unlink(missing_ok=True)
+            log.rename(prev)
+        fh = open(log, "a", encoding="utf-8", buffering=1)
+    except OSError:
+        return
+    win = sys.getwindowsversion()
+    fh.write(f"PoE Tree Overlay {__version__} · {time.strftime('%Y-%m-%d %H:%M:%S')} · "
+             f"Windows {win.major}.{win.minor} build {win.build} · Python {sys.version.split()[0]}\n")
+    faulthandler.enable(file=fh)
+
+    def unhandled(exc_type, exc, tb):
+        fh.write(f"\n{time.strftime('%H:%M:%S')} unhandled exception:\n")
+        traceback.print_exception(exc_type, exc, tb, file=fh)
+        sys.__excepthook__(exc_type, exc, tb)
+
+    def thread_unhandled(args):
+        fh.write(f"\n{time.strftime('%H:%M:%S')} unhandled exception in thread "
+                 f"{args.thread.name if args.thread else '?'}:\n")
+        traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback, file=fh)
+
+    sys.excepthook = unhandled
+    threading.excepthook = thread_unhandled
+
+
 def main():
+    start_log()
     # 1 ms timer resolution: the cursor sampling and repaint timers (8 ms)
     # otherwise tick at Windows' default 15.6 ms
     winmm = ctypes.windll.winmm
@@ -1749,5 +1797,11 @@ def main():
     if w.settings.get("start_minimized") or os.environ.get("TREEOVERLAY_MINIMIZED"):
         w.showMinimized()   # stay out of the game's way
     else:
-        w.show()
+        if "--background" in sys.argv:
+            # started by a script or an update: appear without taking the focus
+            w.setAttribute(Qt.WA_ShowWithoutActivating)
+            w.show()
+            w.setAttribute(Qt.WA_ShowWithoutActivating, False)
+        else:
+            w.show()
     sys.exit(app.exec())

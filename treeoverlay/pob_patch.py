@@ -217,6 +217,8 @@ def sync(pob_dir, wanted, backup_dir):
     """Make PoB match `wanted`: "title", "theme" and any of EXTRAS, with the
     quiet update check whenever anything is changed. Returns each feature's state."""
     wanted = set(wanted)
+    write_theme_config("light" in wanted)
+    wanted.discard("light")
     extras = wanted & set(EXTRAS)
     write_extras_config(extras)
     wanted = (wanted - extras) | ({"extras"} if extras else set())
@@ -232,16 +234,23 @@ def sync(pob_dir, wanted, backup_dir):
     return {f: state(pob_dir, f) for f in ("title", "theme", "extras", "quiet")}
 
 
+def write_theme_config(light):
+    """pob_theme.cfg: the macOS-style look's variant (read when PoB starts)."""
+    _write_if_changed(LINK_DIR / "pob_theme.cfg", f"light={int(light)}\n")
+
+
 def write_extras_config(extras):
     """pob_extras.cfg: which parts of PoETreeOverlay.lua are on (read when PoB starts)."""
-    text = "".join(f"{name}={int(name in extras)}\n" for name in EXTRAS)
-    target = LINK_DIR / "pob_extras.cfg"
+    _write_if_changed(LINK_DIR / "pob_extras.cfg", "".join(f"{name}={int(name in extras)}\n" for name in EXTRAS))
+
+
+def _write_if_changed(target, text):
     try:
         if target.read_text(encoding="utf-8") == text:
             return
     except OSError:
         pass
-    LINK_DIR.mkdir(parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8", newline="\n")
 
 

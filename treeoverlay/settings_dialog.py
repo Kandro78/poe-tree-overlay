@@ -18,7 +18,9 @@ POB_OPTIONS = [
                                                "(by the DPS chosen under \"Sort gems by DPS\")."),
     ("pob_speed", "Lower CPU use when idle", "Path of Building draws 20 frames a second instead of over 100 "
                                              "while you're not using it."),
-    ("pob_theme", "macOS-style look", "Rounded controls, macOS dark colours and the Inter font."),
+    ("pob_theme", "macOS-style look", "Rounded controls, macOS colours and the Inter font."),
+    ("pob_theme_light", "Light colours", "The macOS-style look in light greys with dark text "
+                                         "(needs the look above; takes effect when PoB restarts)."),
 ]
 
 
@@ -42,7 +44,7 @@ class SettingsDialog(QDialog):
         self.auto_next = theme.Switch()
         self.auto_next.setChecked(settings["auto_next_tree"])
         shown = theme.Card()
-        shown.add(theme.row("Mastery effects to pick", self.labels))
+        shown.add(theme.row("Mastery effects and jewels", self.labels))
         shown.add(theme.row("Read which passives are allocated", self.progress))
         shown.add(theme.row("Number the next (in Path of Building)", self.route))
         shown.add(theme.row("Switch to the next tree when one is complete", self.auto_next))

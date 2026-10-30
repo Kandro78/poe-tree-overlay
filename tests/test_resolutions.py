@@ -38,21 +38,23 @@ def frame(t, w, h, ui, header=True):
 
 
 ok = True
-for w, h, ui in ((1920, 1080, 1.0), (3440, 1440, 1.0), (2560, 1440, 1.2)):
+for w, h, ui in ((1920, 1080, 1.0), (3440, 1440, 1.0), (2560, 1440, 1.2),
+                 (3840, 2160, 1.0), (2560, 1080, 1.0), (1600, 900, 1.0), (1366, 768, 1.0)):
     tr = Tracker()
     tr.load_reference(DATA_DIR / "render_0.2972.png", meta, cache=DATA_DIR / "refmap.npz")
     tr.fit_to_window(w, h, ui)
-    s = 0.144 * h / 1440
-    t = Transform(s, w / 2 + 4 * s, h / 2 + 3180 * s)
     errs, lost = [], 0
-    for i in range(40):
-        t = Transform(s, t.tx + 18 * w / 2560, t.ty - 9 * h / 1440)
-        est = tr.update(frame(t, w, h, ui))
-        if est is None:
-            lost += 1
-            continue
-        errs.append(max(np.hypot(*(np.array(est.to_screen(*t.to_tree(x, y))) - (x, y)))
-                        for x, y in ((0, 0), (w, 0), (0, h), (w, h))))
+    for level, steps in ((0.144, 40), (0.234, 15)):     # min zoom, then one wheel step in
+        s = level * h / 1440
+        t = Transform(s, w / 2 + 4 * s, h / 2 + 3180 * s)
+        for i in range(steps):
+            t = Transform(s, t.tx + 18 * w / 2560, t.ty - 9 * h / 1440)
+            est = tr.update(frame(t, w, h, ui))
+            if est is None:
+                lost += 1
+                continue
+            errs.append(max(np.hypot(*(np.array(est.to_screen(*t.to_tree(x, y))) - (x, y)))
+                            for x, y in ((0, 0), (w, 0), (0, h), (w, h))))
     gate = tr.gate is not None
     closed = tr.gate_closed(frame(t, w, h, ui, header=False)) if gate else None
     print(f"{w}x{h} UI {int(ui * 100)}%: lost {lost}, worst {max(errs):.1f} px, header learned {gate}, "

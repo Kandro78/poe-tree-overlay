@@ -24,6 +24,7 @@ class Spec:
     tree_version: str = ""
     masteries: dict = field(default_factory=dict)  # mastery node -> effect id
     ascend_id: int = 0  # PoB's ascendClassId: 1-based index into the class's ascendancies, 0 = none
+    jewels: dict = field(default_factory=dict)  # jewel socket node -> name of the jewel the build puts there
 
 
 def _b64decode(text):
@@ -32,11 +33,42 @@ def _b64decode(text):
     return base64.b64decode(text)
 
 
+def _item_names(root):
+    """Item id -> a short name: the item's name line, or its base for the
+    unnamed ("New Item") ones PoB creates."""
+    names = {}
+    for item in root.iter("Item"):
+        lines = [ln.strip() for ln in (item.text or "").strip().splitlines() if ln.strip()]
+        if lines and lines[0].lower().startswith("rarity:"):
+            lines = lines[1:]
+        if not lines:
+            continue
+        name = lines[0]
+        if name.lower() in ("new item", "") and len(lines) > 1:
+            name = lines[1]
+        names[item.get("id")] = name
+    return names
+
+
+def _spec_jewels(spec, names):
+    """Jewel socket node id -> jewel name, from the spec's <Sockets>."""
+    jewels = {}
+    for sock in spec.iter("Socket"):
+        name = names.get(sock.get("itemId"))
+        if name and sock.get("itemId") != "0":
+            try:
+                jewels[int(sock.get("nodeId"))] = name
+            except (TypeError, ValueError):
+                pass
+    return jewels
+
+
 def specs_from_xml(xml_text):
     root = ET.fromstring(xml_text)
     tree = root.find("Tree")
     if tree is None:
         raise ValueError("build has no <Tree> section")
+    names = _item_names(root)
     specs = []
     for i, spec in enumerate(tree.findall("Spec"), 1):
         nodes = [int(n) for n in (spec.get("nodes") or "").split(",") if n.strip()]
@@ -53,6 +85,7 @@ def specs_from_xml(xml_text):
             ascend_id=int(spec.get("ascendClassId") or 0),
             tree_version=spec.get("treeVersion") or "",
             masteries=masteries,
+            jewels=_spec_jewels(spec, names),
         ))
     active = int(tree.get("activeSpec") or 1) - 1
     return specs, max(0, min(active, len(specs) - 1))

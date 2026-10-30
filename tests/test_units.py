@@ -22,8 +22,17 @@ from treeoverlay.tree import PassiveTree  # noqa: E402
 TREE = PassiveTree()
 XML = """<PathOfBuilding><Tree activeSpec="2">
   <Spec title="Act 1" classId="3" treeVersion="3_29" nodes="54447,36774,17579" masteryEffects=""/>
-  <Spec title="Maps" classId="3" ascendClassId="2" treeVersion="3_29" nodes="54447,36774,17579,33296" masteryEffects="{28680,61071}"/>
-</Tree></PathOfBuilding>"""
+  <Spec title="Maps" classId="3" ascendClassId="2" treeVersion="3_29" nodes="54447,36774,17579,33296" masteryEffects="{28680,61071}">
+    <Sockets><Socket nodeId="61419" itemId="1"/><Socket nodeId="26196" itemId="2"/><Socket nodeId="7960" itemId="0"/></Sockets>
+  </Spec>
+</Tree><Items>
+  <Item id="1">Rarity: UNIQUE
+Watcher's Eye
+Prismatic Jewel</Item>
+  <Item id="2">Rarity: RARE
+New Item
+Cobalt Jewel</Item>
+</Items></PathOfBuilding>"""
 
 
 def tree_url(class_id, nodes, masteries=()):
@@ -42,6 +51,9 @@ class BuildInput(unittest.TestCase):
         self.assertEqual(active, 1)
         self.assertEqual(specs[1].masteries, {28680: 61071})
         self.assertEqual(TREE.ascendancy_name(specs[1].class_id, specs[1].ascend_id), "Elementalist")
+        self.assertEqual(specs[0].jewels, {})
+        # named jewels keep their name, PoB's unnamed ones show their base; empty sockets are left out
+        self.assertEqual(specs[1].jewels, {61419: "Watcher's Eye", 26196: "Cobalt Jewel"})
         self.assertIsNone(TREE.ascendancy_name(specs[0].class_id, specs[0].ascend_id))
 
     def test_pob_code(self):

@@ -11,17 +11,21 @@ It also knows what your character has allocated, from the screen and
 * allocated passives fade out, refund candidates get a red ✕
 * the next points to take are numbered (an always-connected route that heads
   for the nearest notable, keystone, jewel socket or mastery); the first one pulses
-* masteries show the effect the build picks, at every zoom
+* masteries show the effect the build picks, and jewel sockets the jewel the build puts there, at every zoom
 * a finished leveling tree switches to the build's next tree by itself
 * the ascendancy panel and cluster jewel nodes are covered too
 
 Colours: cyan = small passive, gold = notable, red = keystone,
 purple = mastery, green = jewel socket / connections.
 
+![The overlay on the in-game passive tree](docs/overlay.jpg)
+
 ## Install and run
 
-**Packaged app**: run `PoE Tree Overlay.exe` (built with `tools/build_exe.py`).
-On first start it downloads the passive tree from GGG's export and builds its
+**Packaged app**: download the latest release zip, unpack it anywhere and run
+`PoE Tree Overlay.exe`. The exe is unsigned, so Windows SmartScreen may warn
+once (More info -> Run anyway); building from source below avoids that. On
+first start it downloads the passive tree from GGG's export and builds its
 reference images (about half a minute). Data and settings live in
 `%APPDATA%\PoE Tree Overlay`.
 
@@ -58,8 +62,9 @@ Data and settings then live in the project folder (`data/`, `settings.json`).
    * **Lower CPU use when idle**: PoB draws 20 frames a second instead of over
      100 while it's in front but unused (in the background it already slows
      down by itself).
-   * **macOS-style look**: rounded controls, macOS dark greys and the Inter
-     font.
+   * **macOS-style look**: rounded controls, macOS greys (dark, or light with
+     **Light colours**) and the Inter font
+     ([dark](docs/pob_dark.png) / [light](docs/pob_light.png)).
 
    The originals are kept in `data/pob_backup` and put back when an option is
    switched off; changes show after PoB restarts. PoB's update check is taught
@@ -182,6 +187,33 @@ result, for `tests\replay_dump.py`, `tests\replay_burst.py` and
 result and ring update for `tests\analyze_trace.py`. `TREEOVERLAY_LOG=1`
 prints the status, `TREEOVERLAY_FAKE_GAME=1` makes `tools\fake_game.py`'s
 window count as the game.
+
+## Privacy
+
+Everything runs and stays on your PC. The only network calls are:
+
+* GGG's passive tree export (first start, and **Update tree data**).
+* pathofexile.com, to list your characters and read their allocated passives -
+  only when an account name is set. With Path of Building installed, the
+  account PoB imports from is filled in for you; clear the field and the
+  overlay never talks to pathofexile.com.
+
+No game memory is read, no input is sent to the game, nothing is uploaded.
+
+## Reporting a problem
+
+Say your Windows version, resolution and in-game UI scale, and attach
+`%APPDATA%\PoE Tree Overlay\log.txt` (`log_prev.txt` is the run before; both
+hold only version info and error traces). If the rings sit wrong or lag,
+a trace helps: set `TREEOVERLAY_TRACE=<file>` as described under Development,
+reproduce, and attach the file.
+
+## Licence
+
+MIT (see `LICENSE`). Bundled: the Inter font (SIL OFL, `tools/fonts/`),
+PoB's cluster orbit offsets (MIT). Tree data and artwork are downloaded from
+GGG's own export on your machine and are Grinding Gear Games' property.
+Not affiliated with Grinding Gear Games or Path of Building.
 
 ## Third-party tool rules
 

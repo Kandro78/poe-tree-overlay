@@ -23,7 +23,7 @@ tree = PassiveTree()
 render = cv2.imread(str(DATA_DIR / "render_0.2972.png"))
 meta = json.loads((DATA_DIR / "render_0.2972.json").read_text())
 W, H = 2560, 1440
-ascendancy.SEARCH_EVERY = ascendancy.CHECK_EVERY = 0.0   # test every frame
+ascendancy.CHECK_EVERY = ascendancy.IDLE_SEARCH_EVERY = ascendancy.SEARCH_GAP = 0.0   # test every frame
 
 
 def tree_frame(s=0.144):
