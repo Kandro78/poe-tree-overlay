@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtCore import QRect
-from PySide6.QtGui import (QAction, QColor, QFont, QFontMetricsF, QIcon, QPainter, QPainterPath, QPen, QPixmap,
+from PySide6.QtGui import (QAction, QColor, QFont, QFontMetricsF, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap,
                            QRegion)
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel,
                                QLineEdit, QMenu, QMessageBox, QProgressDialog, QPushButton, QSystemTrayIcon,
@@ -51,7 +51,6 @@ WDA_EXCLUDEFROMCAPTURE = 0x11
 DEFAULT_LATENCY = 0.03   # s the game shows the tree behind the cursor, until measured
 PRESENT_DELAY = 0.004    # s from painting the overlay to it being on screen (best fit over 4 live traces)
 WHEEL_SETTLE = 0.25      # s after a wheel notch in which a captured frame may still show the old zoom
-LABEL_ZOOM = 0.3   # from this zoom on, all remaining notables/masteries get a label
 
 COLORS = {"normal": QColor(80, 220, 255), "notable": QColor(255, 200, 60), "keystone": QColor(255, 90, 60),
           "mastery": QColor(200, 120, 255), "jewel": QColor(120, 255, 140), "start": QColor(80, 220, 255)}
@@ -160,6 +159,7 @@ class Worker(QThread):
         self._asc_open = False
         self._stop = False
         self.wake = threading.Event()
+        self._was_down, self._press_t = False, None
 
     def stop(self):
         self._stop = True
@@ -273,7 +273,15 @@ class Worker(QThread):
                 and not self.tracker.last_static and not self.tracker.last_fast):
             self.reader.update(frame, t)
             progress = (frozenset(self.reader.allocated), frozenset(self.reader.seen), list(self.reader.covered_rects))
-        # the ascendancy panel: not while dragging (the search takes ~80 ms)
+        # a click that left the tree where it was may have opened the ascendancy panel
+        if cursor[2] and not self._was_down:
+            self._press_t = t
+        elif not cursor[2] and self._was_down:
+            p0 = self._press_t
+            if t is not None and p0 is not None and abs(t.tx - p0.tx) + abs(t.ty - p0.ty) < 3:
+                self.asc.clicked()
+        self._was_down = cursor[2]
+        # the ascendancy panel: not while dragging
         if t is not None and not cursor[2] and not self.tracker.last_fast:
             asc_t = self.asc.update(frame)
             if asc_t is not None or self._asc_open:
@@ -299,8 +307,8 @@ class Worker(QThread):
         self._nap(pause - (time.perf_counter() - t0))
 
     def _nap(self, seconds):
-        """Idle until the next capture; a wheel turn (the overlay sets wake)
-        cuts it short, and while its zoom is still to be seen, look often."""
+        """Idle until the next capture; a wheel turn or a press (the overlay
+        sets wake) cuts it short, and while a zoom is still to be seen, look often."""
         if self.tracker.wheel_hint is not None:
             seconds = min(seconds, 0.002)
         self.wake.wait(max(0.0, seconds))
@@ -364,14 +372,21 @@ class Overlay(QWidget):
         self.drag_samples = []           # (capture time, tree tx, tree ty) during the current drag
         self.press_ref = None
         self.press_time = 0.0
+        # After a drag the tracker's next results still come from frames taken
+        # before the release; they get the cursor's last moves added (up to the
+        # release) instead of the rings jumping back to them.
+        self.release_time = math.inf
+        self.settling = False
         self.follow_timer = QTimer(self, interval=4, timeout=self._follow)   # ring updates while dragging
         self.picker = None   # clicks on the tree picker aren't drags of the tree
         # wheel zoom: the rings go where a notch takes the tree before the game
         # has drawn it; the tracker (told where to look) confirms it
         self.tracker = None
-        self.on_wheel = None     # wakes the worker
+        self.wake_worker = None  # cuts the worker's idle wait short (a wheel turn, a press)
         self.wheel = WheelReader(lambda: clock()) if not os.environ.get("TREEOVERLAY_NO_WHEEL") else None
         self.zoom = ZoomPredictor()
+        self._layer = None       # (key, x, y, QImage), see _tree_layer
+        self.plan_box = (0.0, 0.0, 0.0, 0.0)
         self.wheel_pred = None   # {"t": Transform shown, "start": scale before, "notches", "last": time}
         self.show()
         # keep our own drawings out of the screenshots the tracker looks at
@@ -386,6 +401,9 @@ class Overlay(QWidget):
                           if n in self.tree.nodes and name and self.tree.nodes[n].ascendancy == name]
         self.nodes = [self.tree.nodes[n] for n in self.plan.target]
         self.edges = self.tree.edges(list(self.plan.target) + [self.plan.start])
+        pts = [(n.x, n.y) for n in self.nodes] + [(self.tree.nodes[self.plan.start].x, self.tree.nodes[self.plan.start].y)]
+        self.plan_box = (min(x for x, _ in pts), min(y for _, y in pts), max(x for x, _ in pts), max(y for _, y in pts))
+        self._layer = None
         self.status = None
         self.update()
 
@@ -432,18 +450,30 @@ class Overlay(QWidget):
         t, path = self._check_wheel(t, cursor, path)
         if t is None:
             self.opacity = 0.0
+            self._layer = None       # ~10-60 MB, drawn again when the tree is back
+            if self.wheel is not None:
+                self.wheel.set_active(False)
         else:
             self.target_opacity = 0.4 if path in self.UNSURE else 1.0
         prev, prev_cursor = self.base, self.base_cursor
         self.base, self.base_cursor = t, cursor
         if (t is not None and prev is not None and cursor and prev_cursor and cursor[2]
                 and self.press is not None and abs(t.scale / prev.scale - 1) < 0.01):
-            # Predicting starts with the press (quick flicks are over in a few
-            # frames); as soon as the tracker sees the cursor travel while the
-            # tree stays put (its edge, a button), the rings stop following.
+            # The rings follow the cursor only once the tracker has seen the tree
+            # move with it: a drag that starts on a passive or the game's UI
+            # doesn't pan the tree. The tracker answers every ~15 ms, and the
+            # prediction then makes up the whole way since the press at once.
+            # If the cursor later travels while the tree stays put (the edge of
+            # the tree), they stop following again.
             dcx, dcy = cursor[0] - prev_cursor[0], cursor[1] - prev_cursor[1]
             dtx, dty = t.tx - prev.tx, t.ty - prev.ty
-            if math.hypot(dtx, dty) > 3 and dtx * dcx + dty * dcy > 0:
+            ref = self.press_ref
+            if ref is not None:      # judged against the press too: the first step can lag the cursor
+                rtx, rty, rcx, rcy = t.tx - ref[0], t.ty - ref[1], cursor[0] - ref[2], cursor[1] - ref[3]
+            else:
+                rtx = rty = rcx = rcy = 0
+            if ((math.hypot(dtx, dty) > 3 and dtx * dcx + dty * dcy > 0)
+                    or (math.hypot(dtx, dty) > 1 and math.hypot(rtx, rty) > 3 and rtx * rcx + rty * rcy > 0)):
                 self.tree_moving = True
             elif math.hypot(dcx, dcy) > 30 and math.hypot(dtx, dty) < 1:
                 self.tree_moving = False
@@ -537,8 +567,8 @@ class Overlay(QWidget):
                            "notches": (pred["notches"] if pred else 0) + notches, "last": turns[-1][0]}
         if self.tracker is not None:
             self.tracker.wheel_hint = (t, time.perf_counter())
-        if self.on_wheel is not None:
-            self.on_wheel()
+        if self.wake_worker is not None:
+            self.wake_worker()
         trace(k="wheel", t=clock(), tw=turns[-1][0], notches=notches, s=t.scale, tx=t.tx, ty=t.ty, cx=x, cy=y)
         self.base = self.transform = t
         self.target_opacity = 1.0
@@ -549,7 +579,8 @@ class Overlay(QWidget):
         since that frame was captured: the tracker needs 30-150 ms per frame, the
         cursor is read right now."""
         t, c = self.base, self.base_cursor
-        if t is None or c is None or self.press is None or not self.drag_follows or not self.tree_moving:
+        dragging = self.press is not None and self.drag_follows and self.tree_moving
+        if t is None or c is None or not (dragging or self.settling):
             return t
         if len(c) > 3:
             # the cursor right now, so the history reaches the present (the 8 ms
@@ -561,10 +592,13 @@ class Overlay(QWidget):
             # the captured frame showed the cursor of (capture - latency); the
             # screen, by the time this paint is shown, the cursor of (now + present - latency).
             # Only movement with the button down drags the tree: moving the
-            # mouse before pressing must not count.
-            then = self._cursor_at(max(c[3] - self.latency, self.press_time))
-            soon = self._cursor_at(max(now + PRESENT_DELAY - self.latency, self.press_time))
+            # mouse before pressing or after letting go must not count.
+            end = self.release_time
+            then = self._cursor_at(min(max(c[3] - self.latency, self.press_time), end))
+            soon = self._cursor_at(min(max(now + PRESENT_DELAY - self.latency, self.press_time), end))
             return Transform(t.scale, t.tx + soon[0] - then[0], t.ty + soon[1] - then[1])
+        if not dragging:
+            return t
         x, y = cursor_pos()
         return Transform(t.scale, t.tx + x - c[0], t.ty + y - c[1])
 
@@ -641,14 +675,24 @@ class Overlay(QWidget):
                 for x0, y0, x1, y1 in self.ui_rects)
             self.press, self.drag_follows = (x, y), not on_ui
             self.press_time = clock()
-            self.tree_moving = not on_ui
+            self.release_time, self.settling = math.inf, False
+            self.tree_moving = False         # until the tracker sees the tree move
+            if self.wake_worker is not None:
+                # standing still it only looks 8 times a second; the rings wait for its first look
+                self.wake_worker()
             # where tree and cursor were when the button went down (the tree stands
             # still then); the latency is measured from this point
             self.press_ref = (self.base.tx, self.base.ty, cx, cy) if self.base is not None else None
         elif not down and self.press is not None:
+            self.settling = self.drag_follows and self.tree_moving
+            self.release_time = clock()
             self.press, self.drag_start, self.tree_moving = None, None, False
             self._measure_latency()
-        if self.press is not None and self.drag_follows and self.tree_moving:
+        if self.wheel is not None:
+            self.wheel.set_active(self.press is None)    # no zooming in the middle of a drag
+        # while dragging, and just after: the game still draws the last moves
+        if ((self.press is not None and self.drag_follows and self.tree_moving)
+                or (self.settling and now < self.release_time + self.latency + 0.05)):
             t = self._predicted()
             cur = self.transform
             if cur is None or abs(t.tx - cur.tx) + abs(t.ty - cur.ty) > 0.3:
@@ -675,6 +719,94 @@ class Overlay(QWidget):
             path.moveTo(*t.to_screen(na.x, na.y))
             path.lineTo(*t.to_screen(nb.x, nb.y))
         return path
+
+    def _tree_layer(self, t, w, h):
+        """The lines, rings and crosses, drawn once into an image for this zoom
+        and progress; a pan only moves the image. Zoomed out, drawing them takes
+        30-60 ms, far too slow to follow a drag. Returns (x, y, image): the
+        image goes at (t.tx + x, t.ty + y)."""
+        st = self.status
+        key = (t.scale, id(self.plan)) + ((frozenset(st["done"]), frozenset(st["next"]), frozenset(st["wrong"]))
+                                          if st else ())
+        s = t.scale
+        bx0, by0, bx1, by1 = self.plan_box
+        pad = 150 * s + 20
+        bx0, by0, bx1, by1 = t.tx + bx0 * s - pad, t.ty + by0 * s - pad, t.tx + bx1 * s + pad, t.ty + by1 * s + pad
+        c = self._layer
+        if c is not None and c[0] == key:
+            _, ox, oy, img = c
+            x0, y0 = t.tx + ox, t.ty + oy
+            # still good while it holds the part of the build that is on screen
+            if (x0 <= max(bx0, 0) + 1 and y0 <= max(by0, 0) + 1 and x0 + img.width() >= min(bx1, w) - 1
+                    and y0 + img.height() >= min(by1, h) - 1):
+                return ox, oy, img
+        # the build at this zoom, as far as it reaches into the screen and half a
+        # screen around it (a long drag draws it again)
+        mx, my = w / 2, h / 2
+        x0, y0 = math.floor(max(bx0, -mx)), math.floor(max(by0, -my))
+        x1, y1 = max(x0 + 1, math.ceil(min(bx1, w + mx))), max(y0 + 1, math.ceil(min(by1, h + my)))
+        img = QImage(x1 - x0, y1 - y0, QImage.Format_ARGB32_Premultiplied)
+        img.fill(Qt.transparent)
+        q = QPainter(img)
+        q.setRenderHint(QPainter.Antialiasing)
+        self._draw_tree(q, Transform(s, t.tx - x0, t.ty - y0), img.width(), img.height())
+        q.end()
+        self._layer = (key, x0 - t.tx, y0 - t.ty, img)
+        return x0 - t.tx, y0 - t.ty, img
+
+    def _draw_tree(self, p, t, w, h):
+        s = t.scale
+        st = self.status
+        done = st["done"] if st else set()
+        nxt = st["next"] if st else set()
+        # Kept quiet so the tree itself stays readable: thin see-through lines
+        # and rings, a little stronger only for the points that can be taken now.
+        rim = QPen(QColor(0, 0, 0, 50), max(2.0, 8 * s))
+        line = QPen(QColor(120, 255, 160, 95), max(1.5, 5 * s))
+        faint = QPen(QColor(120, 255, 160, 32), max(1.0, 4 * s))
+        for pen in (rim, line, faint):
+            pen.setCapStyle(Qt.RoundCap)
+        paths = [(self._edge_path(t, a, b), (a in done or a == self.plan.start) and (b in done or b == self.plan.start))
+                 for a, b in self.edges]
+        p.setPen(faint)
+        for path, walked in paths:
+            if walked:
+                p.drawPath(path)
+        for pen in (rim, line):
+            p.setPen(pen)
+            for path, walked in paths:
+                if not walked:
+                    p.drawPath(path)
+
+        p.setBrush(Qt.NoBrush)
+        for n in self.nodes:
+            x, y = t.to_screen(n.x, n.y)
+            if not (-50 < x < w + 50 and -50 < y < h + 50):
+                continue
+            r = n.radius * s * 1.15
+            color = QColor(COLORS.get(n.kind, COLORS["normal"]))
+            if n.id in done:
+                color.setAlpha(55)
+                p.setPen(QPen(color, max(1.0, 3 * s)))
+                p.drawEllipse(QPointF(x, y), r * 0.9, r * 0.9)
+                continue
+            if n.id in nxt:
+                color.setAlpha(225)
+                self._ring(p, x, y, r, color, max(2.0, 8 * s))
+            else:
+                color.setAlpha(170)
+                self._ring(p, x, y, r, color, max(1.5, 6 * s))
+        # nodes the character took that the build doesn't use
+        if st:
+            for nid in st["wrong"]:
+                n = self.tree.nodes[nid]
+                x, y = t.to_screen(n.x, n.y)
+                d = n.radius * s * 0.5
+                for pen in (QPen(QColor(0, 0, 0, 85), max(3.0, 7 * s)), QPen(QColor(255, 80, 80, 170), max(1.5, 4 * s))):
+                    pen.setCapStyle(Qt.RoundCap)
+                    p.setPen(pen)
+                    p.drawLine(QPointF(x - d, y - d), QPointF(x + d, y + d))
+                    p.drawLine(QPointF(x - d, y + d), QPointF(x + d, y - d))
 
     @staticmethod
     def _ring(p, x, y, r, color, width):
@@ -710,10 +842,10 @@ class Overlay(QWidget):
                     continue
                 taken.append(box)
                 p.setPen(QPen(QColor(255, 255, 255, 18), 1))
-                p.setBrush(QColor(22, 22, 24, 165))
+                p.setBrush(QColor(22, 22, 24, 180))
                 p.drawRoundedRect(box, th / 2, th / 2)
                 p.setBrush(Qt.NoBrush)
-                color.setAlpha(210)
+                color.setAlpha(230)
                 p.setPen(color)
                 p.drawText(box, Qt.AlignCenter, text)
                 break
@@ -758,69 +890,30 @@ class Overlay(QWidget):
         p.setOpacity(self.opacity)
         s = t.scale
         st = self.status
-        done = st["done"] if st else set()
-        nxt = st["next"] if st else set()
-        # Kept quiet so the tree itself stays readable: thin see-through lines
-        # and rings, a little stronger only for the points that can be taken now.
-        rim = QPen(QColor(0, 0, 0, 40), max(2.0, 8 * s))
-        line = QPen(QColor(120, 255, 160, 75), max(1.5, 5 * s))
-        faint = QPen(QColor(120, 255, 160, 25), max(1.0, 4 * s))
-        for pen in (rim, line, faint):
-            pen.setCapStyle(Qt.RoundCap)
-        paths = [(self._edge_path(t, a, b), (a in done or a == self.plan.start) and (b in done or b == self.plan.start))
-                 for a, b in self.edges]
-        p.setPen(faint)
-        for path, walked in paths:
-            if walked:
-                p.drawPath(path)
-        for pen in (rim, line):
-            p.setPen(pen)
-            for path, walked in paths:
-                if not walked:
-                    p.drawPath(path)
-
-        p.setBrush(Qt.NoBrush)
+        ox, oy, layer = self._tree_layer(t, w, h)
+        p.drawImage(QPointF(round(t.tx + ox), round(t.ty + oy)), layer)
         labels = []
-        for n in self.nodes:
-            x, y = t.to_screen(n.x, n.y)
-            if not (-50 < x < w + 50 and -50 < y < h + 50):
-                continue
-            r = n.radius * s * 1.15
-            color = QColor(COLORS.get(n.kind, COLORS["normal"]))
-            if n.id in done:
-                color.setAlpha(40)
-                p.setPen(QPen(color, max(1.0, 3 * s)))
-                p.drawEllipse(QPointF(x, y), r * 0.9, r * 0.9)
-                continue
-            if n.id in nxt:
-                color.setAlpha(200)
-                self._ring(p, x, y, r, color, max(2.0, 8 * s))
-            else:
-                color.setAlpha(140)
-                self._ring(p, x, y, r, color, max(1.5, 6 * s))
-            # zoomed in, names of the notables/masteries still to take
-            if self.settings["show_labels"] and s >= LABEL_ZOOM and n.kind in ("keystone", "notable", "mastery"):
-                order = (0 if n.id in nxt else 10) + ("keystone", "notable", "mastery").index(n.kind)
-                if n.kind == "mastery":
-                    text = self._mastery_text(n.id)
-                    if text:
-                        labels.append((order, x, y, r, text, QColor(220, 180, 255)))
-                else:
-                    labels.append((order, x, y, r, n.name, QColor(255, 225, 140)))
-        # nodes the character took that the build doesn't use
-        if st:
-            for nid in st["wrong"]:
-                n = self.tree.nodes[nid]
+        if self.settings["show_labels"]:
+            # at every zoom, the effect to pick on each mastery still to take
+            done = st["done"] if st else set()
+            nxt = st["next"] if st else set()
+            for n in self.nodes:
+                if n.kind != "mastery" or n.id in done:
+                    continue
                 x, y = t.to_screen(n.x, n.y)
-                d = n.radius * s * 0.5
-                for pen in (QPen(QColor(0, 0, 0, 70), max(3.0, 7 * s)), QPen(QColor(255, 80, 80, 140), max(1.5, 4 * s))):
-                    pen.setCapStyle(Qt.RoundCap)
-                    p.setPen(pen)
-                    p.drawLine(QPointF(x - d, y - d), QPointF(x + d, y + d))
-                    p.drawLine(QPointF(x - d, y + d), QPointF(x + d, y - d))
+                if not (-50 < x < w + 50 and -50 < y < h + 50):
+                    continue
+                text = self._mastery_text(n.id)
+                if text:
+                    labels.append((0 if n.id in nxt else 1, x, y, n.radius * s * 1.15, text, QColor(220, 180, 255)))
         # names keep clear of the game's UI and tooltips, where they'd be cut off
         taken = [QRectF(x0 * w, y0 * h, (x1 - x0) * w, (y1 - y0) * h) for x0, y0, x1, y1 in self.ui_rects]
         taken += [QRectF(x, y, rw, rh) for x, y, rw, rh in self.covered_rects]
+        if self.picker is not None and self.picker.isVisible() and self.rect_px is not None:
+            # the tree panel sits on top of the overlay
+            dpr, g = self.picker.devicePixelRatioF(), self.picker.frameGeometry()
+            taken.append(QRectF(g.x() * dpr - self.rect_px[0], g.y() * dpr - self.rect_px[1],
+                                g.width() * dpr, g.height() * dpr))
         self._place_labels(p, labels, taken, w, h, s)
         p.setBrush(Qt.NoBrush)
         p.restore()
@@ -832,21 +925,17 @@ class Overlay(QWidget):
             return
         t = self.asc[0]
         s = t.scale
-        labels = []
         for n in self.asc_nodes:
             x, y = t.to_screen(n.x, n.y)
             r = n.radius * s * 1.2
             color = QColor(255, 200, 60) if n.kind == "notable" else QColor(80, 220, 255)
             if n.id in self.allocated:
-                color.setAlpha(40)
+                color.setAlpha(55)
                 p.setPen(QPen(color, max(1.0, 3 * s)))
                 p.drawEllipse(QPointF(x, y), r, r)
             else:
-                color.setAlpha(170)
+                color.setAlpha(195)
                 self._ring(p, x, y, r, color, max(2.0, 7 * s))
-            if n.kind == "notable" and n.id not in self.allocated and self.settings["show_labels"]:
-                labels.append((0, x, y, r, n.name, QColor(255, 225, 140)))
-        self._place_labels(p, labels, [], w, h, 0.3)
 
     def set_ascendancy_panel(self, found):
         self.asc = found
@@ -967,7 +1056,7 @@ class ControlWindow(QWidget):
         shown = theme.Card()
         shown.add(theme.row("Show overlay", self.show_box, key=keys["toggle"] or None))
         shown.add(theme.row("Track allocated passives", self.progress_box))
-        shown.add(theme.row("Names of upcoming notables and masteries", self.labels_box))
+        shown.add(theme.row("Mastery effects to pick", self.labels_box))
 
         tools = QHBoxLayout(); tools.setSpacing(8)
         for b in (cal_btn, reset_btn, update_btn):
@@ -1007,7 +1096,7 @@ class ControlWindow(QWidget):
         self.picker = TreePicker()
         self.overlay.picker = self.picker
         self.overlay.tracker = self.worker.tracker
-        self.overlay.on_wheel = self.worker.wake.set
+        self.overlay.wake_worker = self.worker.wake.set
         self.picker.chosen.connect(self.spec_box.setCurrentIndex)
         self.picker.reread.connect(self.reread)
         self.worker.located.connect(self.on_located)

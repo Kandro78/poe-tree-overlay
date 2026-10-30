@@ -11,7 +11,7 @@ It also knows what your character has allocated, from the screen and
 * allocated passives fade out, refund candidates get a red ✕
 * the next points to take are numbered (an always-connected route that heads
   for the nearest notable, keystone, jewel socket or mastery); the first one pulses
-* upcoming notables are named, masteries show the effect the build picks
+* masteries show the effect the build picks, at every zoom
 * a finished leveling tree switches to the build's next tree by itself
 * the ascendancy panel and cluster jewel nodes are covered too
 

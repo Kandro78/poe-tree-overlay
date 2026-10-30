@@ -51,7 +51,7 @@ for diameter in (500, 800, 1100):
     truth = Transform(s, x0 - am["origin_x"] * s, y0 - am["origin_y"] * s)
     finder.transform = None
     t0 = time.perf_counter()
-    t = finder.update(frame)
+    t = finder._find(frame, finder.tracker)     # the search itself, as its thread runs it
     ms = (time.perf_counter() - t0) * 1000
     if t is None:
         print(f"panel {diameter} px: not found ({ms:.0f} ms)")
@@ -63,8 +63,19 @@ for diameter in (500, 800, 1100):
     ok &= err < 6
 finder.transform = None
 for s in (0.144, 0.3):
-    if finder.update(tree_frame(s)) is not None:
+    if finder._find(tree_frame(s), finder.tracker) is not None:
         print(f"false panel on a plain tree frame (zoom {s})")
         ok = False
+# the tracker's thread only hands the frame over: it must never wait for a search
+finder.transform, finder.last_try = None, 0.0
+t0 = time.perf_counter()
+finder.update(tree_frame(0.144))
+handed = (time.perf_counter() - t0) * 1000
+for _ in range(100):
+    if not finder._busy:
+        break
+    time.sleep(0.02)
+print(f"update() on the tracker's thread: {handed:.0f} ms (search ran on its own thread: {not finder._busy})")
+ok &= handed < 30 and not finder._busy
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

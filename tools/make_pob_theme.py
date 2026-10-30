@@ -4,12 +4,16 @@
   "VAR BOLD") redrawn with Inter (tools/fonts, SIL Open Font License), in
   PoB's own bitmap font format: per size a white RGBA atlas with the glyphs in
   alpha, and a table "GLYPH x y width left right" for ASCII 0-127, every glyph
-  one font height tall on a shared baseline.
+  one font height tall on a shared baseline. Each size is fitted to PoB's
+  own font (tools/fonts/pob/*.tgf, from PoB's install): PoB lays out labels
+  and columns by fixed widths, so text that runs wider than Liberation Sans
+  spills over the edges ("lovement Speed Modifier").
 * Assets/PoETreeOverlay_round.png: a white disc, drawn as 9 slices for
   rounded boxes.
 
     python tools/make_pob_theme.py      (needs Pillow)
 """
+import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -18,6 +22,27 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "treeoverlay" / "pob_theme"
 FONTS = ROOT / "tools" / "fonts"
 SIZES = [10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 32, 36, 40, 48, 56, 64]
+# what the fit is measured on: PoB's labels and numbers
+SAMPLE = ("Movement Speed Modifier Enemy Life Recovery Curses and Debuffs Block Stun Duration "
+          "Effective Hit Pool Lightning Max Hit Average Damage Total Increased Configuration "
+          "Seething Divine Life Flask, Jingling Spirit Shield 1,755 (+40%) 3,739.9 DPS x 0.81 12.5s")
+FIT = 0.97        # at most this wide against PoB's font, over SAMPLE
+
+
+def pob_advances(name):
+    """PoB's own font: per size the advance (width + left + right) of each glyph."""
+    out, h = {}, None
+    for line in (FONTS / "pob" / f"{name}.tgf").read_text().splitlines():
+        m = re.match(r"HEIGHT (\d+);", line)
+        if m:
+            h = int(m.group(1))
+            out[h] = []
+            continue
+        m = re.match(r"GLYPH\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+);", line)
+        if m:
+            _, _, w, lft, rgt = map(int, m.groups())
+            out[h].append(w + lft + rgt)
+    return out
 
 
 def pow2(n):
@@ -27,17 +52,36 @@ def pow2(n):
     return p
 
 
-def make_size(path, height, tracking=0.0):
+def fitted_advances(font, pob):
+    """Inter's advances, spaced so SAMPLE is as wide as FIT times PoB's font
+    (whole pixels per glyph, so the spacing is scaled rather than offset: an
+    offset rounds the same way for every glyph); none more than 1 px wider
+    than PoB's either."""
+    def advances(k):
+        return [min(round(font.getlength(chr(c)) * k), pob[c] + 1) if 32 <= c < 127 else 0
+                for c in range(128)]
+    target = FIT * sum(pob[ord(c)] for c in SAMPLE)
+    k = 1.15
+    while k > 0.75:
+        adv = advances(k)
+        if sum(adv[ord(c)] for c in SAMPLE) <= target:
+            return adv
+        k -= 0.0025
+    return adv
+
+
+def make_size(path, height, pob):
     # the same cap height and baseline as Liberation Sans in the same cell, so
     # text keeps its size and place in PoB (Inter's line metrics are taller)
     em = round(0.88 * height)
     font = ImageFont.truetype(str(path), em)
     baseline = round(0.81 * height)
     gap = max(2, height // 4)
+    advances = fitted_advances(font, pob)
     glyphs = []
     for code in range(128):
         ch = chr(code)
-        adv = round(font.getlength(ch) + tracking * em) if 32 <= code < 127 else 0
+        adv = advances[code]
         box = font.getbbox(ch, anchor="ls") if 32 < code < 127 else None
         if box is None or box[2] <= box[0]:
             glyphs.append((None, 1, 0, max(0, adv - 1)))
@@ -69,10 +113,11 @@ def make_size(path, height, tracking=0.0):
     return atlas, lines
 
 
-def make_font(ttf, name, tracking=0.0):
+def make_font(ttf, name):
+    pob = pob_advances(name)
     table = []
     for h in SIZES:
-        atlas, lines = make_size(FONTS / ttf, h, tracking)
+        atlas, lines = make_size(FONTS / ttf, h, pob[h])
         atlas.save(OUT / "SimpleGraphic" / "Fonts" / f"{name}.{h}.tga", compression="tga_rle")
         table += lines
     (OUT / "SimpleGraphic" / "Fonts" / f"{name}.tgf").write_text("\n".join(table) + "\n", encoding="ascii", newline="\n")
@@ -91,7 +136,7 @@ def make_round():
 if __name__ == "__main__":
     (OUT / "SimpleGraphic" / "Fonts").mkdir(parents=True, exist_ok=True)
     (OUT / "Assets").mkdir(parents=True, exist_ok=True)
-    make_font("Inter-Regular.ttf", "Liberation Sans", tracking=-0.035)   # about as wide as Liberation
+    make_font("Inter-Regular.ttf", "Liberation Sans")
     make_font("Inter-SemiBold.ttf", "Liberation Sans Bold")
     make_round()
     print("written to", OUT)

@@ -32,7 +32,8 @@ class Ladder(unittest.TestCase):
         self.assertAlmostEqual(z.target(0.144, 1), 0.234)
         self.assertAlmostEqual(z.target(0.144, 3), 0.414)
         self.assertAlmostEqual(z.target(0.594, -1), 0.504)
-        self.assertAlmostEqual(z.target(0.684, 2), 0.684)      # the end of the range
+        self.assertAlmostEqual(z.target(0.594, 1), 0.720)      # the last step is a bigger one
+        self.assertAlmostEqual(z.target(0.720, 2), 0.720)      # the end of the range
         self.assertAlmostEqual(z.target(0.130, -1), 0.144)
         self.assertAlmostEqual(ZoomPredictor(1080).target(0.108, 1), 0.234 * 1080 / 1440)
 
@@ -63,6 +64,9 @@ class FakeWheel:
         out, self.events = self.events, []
         return out
 
+    def set_active(self, on):
+        self.active = on
+
 
 class FakeUser32:
     def __getattr__(self, name):
@@ -79,7 +83,7 @@ class OverlayWheel(unittest.TestCase):
         self.ov.tracker = Tracker.__new__(Tracker)
         self.ov.tracker.wheel_hint = None
         self.woken = []
-        self.ov.on_wheel = lambda: self.woken.append(1)
+        self.ov.wake_worker = lambda: self.woken.append(1)
         self.t = Transform(0.144, 1280.0, 1180.0)
         self.ov.set_transform(self.t, (900, 500, False, A.clock()), "still")
 

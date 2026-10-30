@@ -3,8 +3,10 @@
 -- PoB draws every box the same way: the border as a filled rectangle, then the
 -- fill one pixel inside it. This module wraps PoB's drawing functions, spots
 -- that pair and draws it as a rounded box instead, and maps PoB's opaque greys
--- to the macOS dark palette. Images, text colours and anything translucent are
--- left as they are. The UI font (Inter) comes with it as SimpleGraphic fonts.
+-- to the macOS dark palette. Coloured frames (the Calcs sections) are toned
+-- down towards that palette, and the textured background behind the tabs is a
+-- plain window colour. Images, text colours and anything translucent are left
+-- as they are. The UI font (Inter) comes with it as SimpleGraphic fonts.
 --
 -- To undo by hand: delete this file and the PoE Tree Overlay line in
 -- Modules/Main.lua (or turn the look off in PoE Tree Overlay's settings).
@@ -19,19 +21,20 @@ disc:Load("Assets/PoETreeOverlay_round.png", "CLAMP")
 -- PoB grey -> macOS dark grey. PoB's light greys (0.66-0.85) are frames and
 -- dividers between panels: those become quiet separators.
 local GREYS = {
-	{ 0.00, 0.110, 0.110, 0.118 },   -- #1c1c1e window
-	{ 0.10, 0.141, 0.141, 0.149 },
-	{ 0.15, 0.173, 0.173, 0.180 },   -- #2c2c2e
-	{ 0.33, 0.227, 0.227, 0.235 },   -- #3a3a3c
-	{ 0.50, 0.282, 0.282, 0.290 },   -- #48484a borders
-	{ 0.66, 0.282, 0.282, 0.290 },
-	{ 0.85, 0.220, 0.220, 0.227 },   -- #38383a separators
-	{ 0.99, 0.220, 0.220, 0.227 },
+	{ 0.00, 0.078, 0.078, 0.086 },   -- #141416 window
+	{ 0.10, 0.102, 0.102, 0.110 },   -- #1a1a1c panels
+	{ 0.15, 0.125, 0.125, 0.133 },   -- #202022
+	{ 0.33, 0.165, 0.165, 0.173 },   -- #2a2a2c
+	{ 0.50, 0.220, 0.220, 0.227 },   -- #38383a borders
+	{ 0.66, 0.220, 0.220, 0.227 },
+	{ 0.85, 0.173, 0.173, 0.180 },   -- #2c2c2e separators
+	{ 0.99, 0.173, 0.173, 0.180 },
 	{ 1.00, 1.000, 1.000, 1.000 },
 }
 local ACCENT = { 0.039, 0.518, 1.0 }       -- #0a84ff
-local CONTROL = { 0.227, 0.227, 0.235 }    -- #3a3a3c: buttons, fields, drop-downs
-local CONTROL_HOVER = { 0.282, 0.282, 0.290 }
+local CONTROL = { 0.173, 0.173, 0.180 }    -- #2c2c2e: buttons, fields, drop-downs
+local CONTROL_HOVER = { 0.227, 0.227, 0.235 }
+local COLOURED = 0.6                       -- how much of a coloured frame's colour is kept
 
 local function grey(v)
 	local lo = GREYS[1]
@@ -46,17 +49,41 @@ local function grey(v)
 	return v, v, v
 end
 
--- the colour as PoB set it (restored after drawing a box); only opaque greys are mapped
+-- PoB's colour strings: "^xRRGGBB", or "^0".."^9" (only black and white are greys)
+local function parse(str)
+	local hex = str:match("^%^x(%x%x%x%x%x%x)")
+	if hex then
+		return tonumber(hex:sub(1, 2), 16) / 255, tonumber(hex:sub(3, 4), 16) / 255, tonumber(hex:sub(5, 6), 16) / 255
+	end
+	local code = str:match("^%^(%d)")
+	if code == "0" then
+		return 0, 0, 0
+	elseif code == "7" then
+		return 1, 1, 1
+	end
+end
+
+-- the colour as PoB set it (restored after drawing a box); only opaque greys are
+-- mapped, and colours set by string (frames, row tints) toned down in boxes
 local lr, lg, lb, la = 1, 1, 1, nil
 local cr = 1
 local isGrey = false
+local tint             -- {r, g, b} of an opaque colour set by string, if not a grey
 local pending          -- a border waiting for its fill
 
 function SetDrawColor(r, g, b, a)
 	lr, lg, lb, la = r, g, b, a
-	isGrey = type(r) == "number" and r == g and g == b and (a == nil or a >= 1)
+	tint = nil
+	local pr, pg, pb, opaque = r, g, b, a == nil or a >= 1
+	if type(r) == "string" then
+		pr, pg, pb = parse(r)
+		opaque = g == nil
+	end
+	isGrey = type(pr) == "number" and pr == pg and pg == pb and opaque
 	if isGrey then
-		cr = r
+		cr = pr
+	elseif type(r) == "string" and pr and opaque then
+		tint = { pr, pg, pb }
 	end
 	if la ~= nil then
 		return realSetDrawColor(r, g, b, a)
@@ -95,13 +122,25 @@ local function radius(w, h)
 	return math.floor(math.min(r, w / 2, h / 2))
 end
 
-local function drawBox(b, fill)
-	local r = radius(b.w, b.h)
-	if b.v >= 1 then                     -- white border: hovered, selected or focused
+-- a coloured frame or row tint, part way towards the panel grey
+local function toned(c)
+	local gr, gg, gb = grey(0.1)
+	return gr + (c[1] - gr) * COLOURED, gg + (c[2] - gg) * COLOURED, gb + (c[3] - gb) * COLOURED
+end
+
+local function setBorder(b)
+	if b.tint then
+		realSetDrawColor(toned(b.tint))
+	elseif b.v >= 1 then                 -- white border: hovered, selected or focused
 		realSetDrawColor(ACCENT[1], ACCENT[2], ACCENT[3])
 	else
 		realSetDrawColor(grey(b.v))
 	end
+end
+
+local function drawBox(b, fill, inset)
+	local r = radius(b.w, b.h)
+	setBorder(b)
 	roundRect(b.x, b.y, b.w, b.h, r)
 	if fill == 0 and b.h <= 40 then
 		realSetDrawColor(CONTROL[1], CONTROL[2], CONTROL[3])
@@ -110,7 +149,7 @@ local function drawBox(b, fill)
 	else
 		realSetDrawColor(grey(fill))
 	end
-	roundRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2, math.max(0, r - 1))
+	roundRect(b.x + inset, b.y + inset, b.w - 2 * inset, b.h - 2 * inset, math.max(0, r - inset))
 	restore()
 end
 
@@ -118,26 +157,35 @@ local function flush()
 	local b = pending
 	if b then
 		pending = nil
-		realSetDrawColor(grey(b.v))
+		setBorder(b)
 		realDrawImage(nil, b.x, b.y, b.w, b.h)
 		restore()
 	end
 end
 
+local function inside(b, x, y, w, h, inset)
+	return x == b.x + inset and y == b.y + inset and w == b.w - 2 * inset and h == b.h - 2 * inset
+end
+
 function DrawImage(handle, x, y, w, h, ...)
-	if handle == nil and isGrey and select("#", ...) == 0 and type(x) == "number" then
+	if handle == nil and (isGrey or tint) and select("#", ...) == 0 and type(x) == "number" then
 		local b = pending
-		if b and x == b.x + 1 and y == b.y + 1 and w == b.w - 2 and h == b.h - 2 then
+		-- a border (grey, or a coloured frame 1-2 px wide) and its grey fill
+		if b and isGrey and (inside(b, x, y, w, h, 1) or (b.tint and inside(b, x, y, w, h, 2))) then
 			pending = nil
-			drawBox(b, cr)
+			drawBox(b, cr, x - b.x)
 			return
 		end
 		flush()
 		if w >= 8 and h >= 8 then
-			pending = { x = x, y = y, w = w, h = h, v = cr }
+			pending = { x = x, y = y, w = w, h = h, v = cr, tint = tint }
 			return
 		end
-		realSetDrawColor(grey(cr))
+		if tint then
+			realSetDrawColor(toned(tint))
+		else
+			realSetDrawColor(grey(cr))
+		end
 		realDrawImage(nil, x, y, w, h)
 		restore()
 		return
@@ -204,8 +252,17 @@ end
 local function wrapClasses()
 	local classes = common and common.classes
 	local view, tip = classes and classes.PassiveTreeView, classes and classes.Tooltip
-	if not view or not tip then
+	if not view or not tip or not main or not main.DrawBackground then
 		return false
+	end
+	-- behind the tabs: the window colour instead of the tree's dark blue texture
+	main.DrawBackground = function(_, viewPort)
+		flush()
+		realSetDrawLayer(nil, -100)
+		realSetDrawColor(grey(0))
+		realDrawImage(nil, viewPort.x, viewPort.y, viewPort.width, viewPort.height)
+		realSetDrawLayer(nil, 0)
+		restore()
 	end
 	local viewDraw, tipDraw = view.Draw, tip.Draw
 	view.Draw = function(...)

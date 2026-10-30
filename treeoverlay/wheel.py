@@ -19,6 +19,8 @@ WM_INPUT = 0x00FF
 RID_INPUT = 0x10000003
 RIM_TYPEMOUSE = 0
 RIDEV_INPUTSINK = 0x00000100
+RIDEV_REMOVE = 0x00000001
+WM_APP_ACTIVE = 0x8000 + 1   # WM_APP + 1: wParam 1 starts listening, 0 stops
 RI_MOUSE_WHEEL = 0x0400
 HWND_MESSAGE = wt.HWND(-3)
 
@@ -58,9 +60,20 @@ class WheelReader:
     def __init__(self, clock=time.perf_counter):
         self.clock = clock
         self.events = deque(maxlen=256)
-        self.ok = False
+        self.ok = False          # listening worked at least once
+        self.active = False
+        self._tid = None
+        self._ready = threading.Event()
         self._thread = threading.Thread(target=self._run, name="wheel", daemon=True)
         self._thread.start()
+
+    def set_active(self, on):
+        """Listen only while it's useful (the tree shown, no button held): Raw
+        Input brings every mouse movement too, each one a call into Python."""
+        if on == self.active or not self._ready.wait(1.0) or self._tid is None:
+            return
+        self.active = on
+        ctypes.windll.user32.PostThreadMessageW(self._tid, WM_APP_ACTIVE, int(on), 0)
 
     def take(self):
         """Wheel turns since the last call, oldest first."""
@@ -97,22 +110,30 @@ class WheelReader:
         user32.RegisterClassW(ctypes.byref(cls))
         hwnd = user32.CreateWindowExW(0, cls.lpszClassName, None, 0, 0, 0, 0, 0, HWND_MESSAGE, None,
                                       cls.hInstance, None)
-        dev = RAWINPUTDEVICE(0x01, 0x02, RIDEV_INPUTSINK, hwnd)   # generic desktop / mouse, also when not in front
-        if not hwnd or not user32.RegisterRawInputDevices(ctypes.byref(dev), 1, ctypes.sizeof(dev)):
-            return
-        self.ok = True
         msg = wt.MSG()
+        user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)    # makes this thread's message queue
+        self._tid = kernel32.GetCurrentThreadId() if hwnd else None
+        self._ready.set()
+        if not hwnd:
+            return
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            if msg.hWnd is None and msg.message == WM_APP_ACTIVE:
+                # generic desktop / mouse, also while another window is in front
+                dev = (RAWINPUTDEVICE(0x01, 0x02, RIDEV_INPUTSINK, hwnd) if msg.wParam
+                       else RAWINPUTDEVICE(0x01, 0x02, RIDEV_REMOVE, None))
+                if user32.RegisterRawInputDevices(ctypes.byref(dev), 1, ctypes.sizeof(dev)) and msg.wParam:
+                    self.ok = True
+                continue
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
 
 
 class ZoomPredictor:
     """Where the tree goes after wheel notches, from the zoom levels the game
-    uses (PoE at 1440p: 0.144 + 0.09 n up to 0.684) and how many of them one
-    notch moves. Both start from what was seen in game and follow what the
-    tracker confirms afterwards."""
-    LADDER_1440 = tuple(round(0.144 + 0.09 * n, 3) for n in range(7))
+    uses and how many of them one notch moves (one, as traced in game; it
+    follows what the tracker confirms afterwards)."""
+    # PoE at 1440p: 0.144 + 0.09 n, then the closest zoom, 0.720 (traced 2026-10-30)
+    LADDER_1440 = tuple(round(0.144 + 0.09 * n, 3) for n in range(6)) + (0.720,)
 
     def __init__(self, height=1440):
         self.ladder = [z * height / 1440 for z in self.LADDER_1440]

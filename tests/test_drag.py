@@ -71,15 +71,32 @@ class Drag(unittest.TestCase):
 
     def test_pan_follows_cursor(self):
         self.press()
-        Mouse.x += 12                       # predicted from the first moment of the drag
+        Mouse.x += 12                       # nothing seen yet: the rings wait
         self.ov._follow()
-        self.assertAlmostEqual(self.ov.transform.tx, self.t.tx + 12, delta=0.5)
-        self.step(15, tree_moves=True)
+        self.assertAlmostEqual(self.ov.transform.tx, self.t.tx, delta=0.5)
+        self.step(15, tree_moves=True)      # the tracker sees the tree move: they catch up at once
+        self.assertAlmostEqual(self.ov.transform.tx, self.t.tx, delta=0.5)
         for _ in range(5):
             self.step(15, tree_moves=True)
             Mouse.x += 12                   # between tracker frames: prediction
             self.ov._follow()
             self.assertAlmostEqual(self.ov.transform.tx, self.t.tx + 12, delta=0.5)
+
+    def test_press_wakes_the_tracker(self):
+        woken = []
+        self.ov.wake_worker = lambda: woken.append(1)
+        self.press()
+        self.assertEqual(woken, [1])
+
+    def test_drag_on_a_passive_leaves_rings_alone(self):
+        # the game doesn't pan when a drag starts on a passive: the rings must not slide either
+        self.press()
+        for _ in range(6):
+            Mouse.x += 10
+            self.ov._follow()
+            self.assertAlmostEqual(self.ov.transform.tx, self.t.tx, delta=0.5)
+            self.ov.set_transform(self.t, (Mouse.x, Mouse.y, True))
+            self.assertAlmostEqual(self.ov.transform.tx, self.t.tx, delta=0.5)
 
     def test_release_stops_prediction(self):
         self.press()
@@ -168,6 +185,43 @@ class GameLatency(unittest.TestCase):
         self.assertAlmostEqual(self.ov.transform.tx, self.t0.tx, delta=0.5)
         Mouse.down = False
         self.ov._follow()
+
+    def test_flick_release_doesnt_jump_back(self):
+        """Let go at full speed: the tree stops where the cursor was then, but
+        the tracker's next results come from frames taken just before. The
+        rings must stay where the tree stopped, not jump back to those."""
+        self.ov.latency = self.LAG
+        Mouse.down = True
+        self.ov._follow()
+        release, pending, after = None, [], []
+        start = self.now
+        while self.now - start < 0.5:
+            self.now += 0.008
+            if release is None:
+                Mouse.x += 4000 * 0.008          # a fast flick...
+                if self.now - start > 0.15:
+                    Mouse.down, release = False, self.now   # ...let go while moving
+            else:
+                Mouse.x += 1000 * 0.008          # the hand keeps moving without the button
+            self.path.append((self.now, Mouse.x))
+            if int(self.now / 0.033) != int((self.now - 0.008) / 0.033):
+                pending.append((self.now + 0.030, self.now, Mouse.x, Mouse.down))
+            while pending and pending[0][0] <= self.now:
+                _, tc, cx, down = pending.pop(0)
+                self.ov.set_transform(Transform(self.t0.scale, self.flick_tree_at(tc, release), self.t0.ty),
+                                      (cx, Mouse.y, down, tc))
+            self.ov._follow()
+            if release is not None:
+                after.append(abs(self.ov.transform.tx - self.flick_tree_at(self.now + A.PRESENT_DELAY, release)))
+        print(f"\n  after letting go of a flick: rings off the tree by at most {max(after):.1f} px")
+        self.assertLess(max(after), 25)
+
+    def flick_tree_at(self, when, release):
+        """The tree follows the cursor (LAG behind) only while the button is down."""
+        lagged = when - self.LAG
+        if release is not None:
+            lagged = min(lagged, release)
+        return self.t0.tx + self.cursor_x_at(lagged) - self.path[0][1]
 
     def test_latency_is_learned_and_rings_stick(self):
         self.drag()                       # the first drag measures the latency
