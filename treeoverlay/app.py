@@ -34,12 +34,13 @@ SETTINGS = ROOT / "settings.json"
 DEFAULTS = {"last_input": "", "spec": -1, "mask_rects": None, "ui_scale": 1.0, "fps": 8, "show_progress": True,
             "start_minimized": False, "appearance": "system", "follow_pob": True, "pob_title_patch": False, "pob_theme": False,
             "pob_speed": False, "pob_link": False, "pob_marks": False, "pob_keys": False,
+            "pob_gems": False,
             "account": "", "character": "", "realm": "pc",
             "show_labels": True, "route_length": 8, "auto_next_tree": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
 
 # PoB change (pob_patch) -> the setting that turns it on
 POB_PATCH_SETTINGS = {"title": "pob_title_patch", "theme": "pob_theme", "speed": "pob_speed",
-                      "link": "pob_link", "marks": "pob_marks", "keys": "pob_keys"}
+                      "link": "pob_link", "marks": "pob_marks", "keys": "pob_keys", "gems": "pob_gems"}
 
 user32 = ctypes.windll.user32
 VK = {f"F{i}": 0x6F + i for i in range(1, 13)}

@@ -14,6 +14,8 @@ POB_OPTIONS = [
     ("pob_marks", "Show in-game progress", "Rings on Path of Building's tree for passives allocated in game "
                                            "(red: not in the tree) and the next points numbered in order."),
     ("pob_keys", "Tree hotkeys", "Ctrl+Up and Ctrl+Down switch the build's tree on any tab."),
+    ("pob_gems", "DPS of linked support gems", "On the Skills tab, how much DPS each linked support gem adds "
+                                               "(by the DPS chosen under \"Sort gems by DPS\")."),
     ("pob_speed", "Lower CPU use when idle", "Path of Building draws 20 frames a second instead of over 100 "
                                              "while you're not using it."),
     ("pob_theme", "macOS-style look", "Rounded controls, macOS dark colours and the Inter font."),

@@ -34,7 +34,7 @@ FILE_DIRS = {"theme": HERE / "pob_theme", "extras": HERE / "pob_extras"}
 HASH_LIST = "PoETreeOverlay.sha1"
 # where PoB and the overlay swap files (PoETreeOverlay.lua reads %APPDATA% too)
 LINK_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "PoE Tree Overlay"
-EXTRAS = ("speed", "link", "marks", "keys")
+EXTRAS = ("speed", "link", "marks", "keys", "gems")
 
 
 @dataclass

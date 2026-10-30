@@ -237,7 +237,7 @@ class PathOfBuilding(unittest.TestCase):
                          {"title": "on", "theme": "on", "extras": "on", "quiet": "on"})
         self.assertIn('pcall(LoadModule, "Modules/PoETreeOverlay")', (d / "Modules/Main.lua").read_text())
         self.assertEqual((pob_patch.LINK_DIR / "pob_extras.cfg").read_text(),
-                         "speed=1\nlink=0\nmarks=1\nkeys=0\n")
+                         "speed=1\nlink=0\nmarks=1\nkeys=0\ngems=0\n")
         self.assertIn("[Tree ", (d / "Classes/PassiveSpec.lua").read_text())
         self.assertTrue((d / "Modules/PoETreeOverlayTheme.lua").is_file())
         font = d / "SimpleGraphic/Fonts/Liberation Sans.16.tga"

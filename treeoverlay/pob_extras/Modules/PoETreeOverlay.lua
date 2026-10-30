@@ -1,13 +1,14 @@
 -- PoE Tree Overlay's additions to Path of Building, installed by PoE Tree Overlay.
 --
--- * speed: draws fewer frames while nothing happens (PoB otherwise redraws
---   the whole tree over 100 times a second, even in the background)
+-- * speed: draws fewer frames while PoB is in front but unused (it otherwise
+--   redraws the whole tree over 100 times a second)
 -- * link:  tells the overlay which build and tree are open, unsaved edits
 --   included (pob_live.xml / pob_live.txt in the overlay's folder)
 -- * marks: shows on PoB's tree what the overlay read from the game: passives
 --   allocated in game (green ring, red if the tree doesn't have them) and the
 --   next points in order (pob_marks.txt in the overlay's folder)
 -- * keys:  Ctrl+Up / Ctrl+Down switch the build's tree on any tab
+-- * gems:  on the Skills tab, how much DPS each linked support gem adds
 --
 -- PoE Tree Overlay's settings say which of these are on (pob_extras.cfg).
 -- To undo by hand: delete this file and the PoE Tree Overlay line in
@@ -319,6 +320,97 @@ if on("marks") then
 				if not ok then
 					ConPrintf("PoE Tree Overlay marks: %s", tostring(err))
 				end
+			end
+		end
+	end)
+end
+
+-- gems --------------------------------------------------------------------------------
+if on("gems") then
+	-- the DPS PoB sorts gems by (the Skills tab's "Sort gems by DPS" choice)
+	local function dpsOf(output, field)
+		return (field == "FullDPS" and output[field]) or (output.Minion and output.Minion.CombinedDPS)
+			or output[field] or 0
+	end
+
+	-- one gem per frame: "+42%" is what the gem adds, i.e. DPS with it / without it
+	local cache = { }
+	local function measure(skillsTab)
+		local build, group = skillsTab.build, skillsTab.displayGroup
+		local key = group and tostring(group) .. "/" .. tostring(build.outputRevision) .. "/" .. skillsTab.sortGemsByDPSField
+		if cache.key ~= key then
+			cache = { key = key, text = { } }
+		end
+		if not group or cache.done then
+			return
+		end
+		local calcFunc, calcBase = build.calcsTab:GetMiscCalculator(build)
+		if not calcFunc then
+			return
+		end
+		local field = skillsTab.sortGemsByDPSField
+		local useFullDPS = field == "FullDPS"
+		for index, gem in ipairs(group.gemList) do
+			if cache.text[index] == nil then
+				local text = ""
+				local effect = gem.gemData and gem.gemData.grantedEffect
+				if effect and effect.support then
+					gem.enabled = not gem.enabled
+					local ok, output = pcall(calcFunc, nil, useFullDPS)
+					gem.enabled = not gem.enabled
+					if ok and output then
+						local base, other = dpsOf(calcBase, field), dpsOf(output, field)
+						local with, without = base, other
+						if not gem.enabled then
+							with, without = other, base
+						end
+						if without > 0 and math.abs(with / without - 1) >= 0.0005 then
+							local change = (with / without - 1) * 100
+							local colour = change > 0 and colorCodes.POSITIVE or colorCodes.NEGATIVE
+							text = string.format("%s%+.1f%% DPS%s", colour, change, gem.enabled and "" or " ^8(off)")
+						elseif with > 0 then
+							text = "^8no DPS change"
+						end
+					end
+				end
+				cache.text[index] = text
+				debug("gem %d: %s", index, text)
+				return
+			end
+		end
+		cache.done = true
+	end
+
+	local function label(skillsTab, index)
+		local slot = skillsTab.gemSlots[index]
+		if slot and not slot.poeOverlayDps then
+			-- past the Count box (hidden for supports, and controls anchored to it hide too)
+			slot.poeOverlayDps = new("LabelControl", { "LEFT", slot.enabled, "RIGHT" }, { 18 + 60 + 10, 0, 0, 16 }, function()
+				local group = skillsTab.displayGroup
+				return group and index <= #group.gemList and cache.text[index] or ""
+			end)
+			skillsTab.controls["poeOverlayGemDps" .. index] = slot.poeOverlayDps
+		end
+	end
+
+	local wrapped = false
+	table.insert(frameHooks, function()
+		local cls = not wrapped and common and common.classes and common.classes.SkillsTab
+		if cls then
+			wrapped = true
+			debug("gems: SkillsTab wrapped")
+			local draw = cls.Draw
+			cls.Draw = function(self, ...)
+				local ok, err = pcall(function()
+					for index in pairs(self.gemSlots or { }) do
+						label(self, index)
+					end
+					measure(self)
+				end)
+				if not ok then
+					debug("gems: %s", tostring(err))
+				end
+				return draw(self, ...)
 			end
 		end
 	end)
