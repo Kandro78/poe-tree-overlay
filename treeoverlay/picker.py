@@ -8,23 +8,32 @@ import ctypes
 import os
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+
+from .theme import font_family
 
 user32 = ctypes.windll.user32
 GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
 WDA_EXCLUDEFROMCAPTURE = 0x11
 
+# a macOS HUD panel: dark translucent glass, white text, the system blue for
+# the current choice
 STYLE = """
-QWidget#panel { background: rgba(10, 10, 12, 215); border: 1px solid rgba(190, 150, 80, 160); border-radius: 4px; }
-QPushButton { color: #ffe18c; background: transparent; border: none; text-align: left; padding: 3px 6px;
-              font: 600 16pt "Segoe UI"; }
-QPushButton:hover { background: rgba(190, 150, 80, 60); }
-QPushButton#item { color: #e6e6e6; font: 14pt "Segoe UI"; padding: 4px 12px; }
-QPushButton#item[current="true"] { color: #ffe18c; }
-QPushButton#small { color: #bbbbbb; font: 12pt "Segoe UI"; padding: 2px 8px; border: 1px solid rgba(190, 150, 80, 90); border-radius: 3px; }
-QLabel { color: #e6e6e6; font: 13pt "Segoe UI"; padding: 0 8px; }
-QLabel#toast { color: #9fe8a8; }
+QWidget#panel { background: rgba(28, 28, 30, 225); border: 1px solid rgba(255, 255, 255, 30); border-radius: 14px; }
+QWidget { font-family: "%(font)s"; }
+QPushButton { color: #f5f5f7; background: transparent; border: none; text-align: left; padding: 4px 8px;
+              border-radius: 8px; font-size: 15pt; font-weight: 600; }
+QPushButton:hover { background: rgba(255, 255, 255, 22); }
+QPushButton:disabled { color: #f5f5f7; }
+QPushButton#item { font-size: 13pt; font-weight: 400; padding: 6px 10px; }
+QPushButton#item[current="true"] { color: #0a84ff; font-weight: 600; }
+QPushButton#small { color: #f5f5f7; font-size: 11pt; font-weight: 500; padding: 3px 12px;
+                    background: rgba(255, 255, 255, 30); border-radius: 12px; }
+QPushButton#small:hover { background: rgba(255, 255, 255, 48); }
+QLabel { color: rgba(235, 235, 245, 165); font-size: 12pt; padding: 0 8px; background: transparent; }
+QLabel#toast { color: #30d158; font-weight: 600; }
+QFrame#sep { background: rgba(255, 255, 255, 26); max-height: 1px; min-height: 1px; border: none; margin: 4px 8px; }
 """
 
 
@@ -37,15 +46,15 @@ class TreePicker(QWidget):
                          Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(STYLE % {"font": font_family()})
         panel = QWidget(self)
         panel.setObjectName("panel")
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(panel)
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(4, 4, 4, 6)
-        lay.setSpacing(1)
+        lay.setContentsMargins(8, 8, 8, 10)
+        lay.setSpacing(2)
 
         top = QHBoxLayout()
         self.title = QPushButton("No build loaded")
@@ -67,8 +76,14 @@ class TreePicker(QWidget):
         self.toast.hide()
         lay.addWidget(self.toast)
         self.list = QWidget()
-        self.list_lay = QVBoxLayout(self.list)
-        self.list_lay.setContentsMargins(0, 4, 0, 0)
+        outer_list = QVBoxLayout(self.list)
+        outer_list.setContentsMargins(0, 0, 0, 0)
+        sep = QFrame()
+        sep.setObjectName("sep")
+        outer_list.addWidget(sep)
+        self.list_lay = QVBoxLayout()
+        outer_list.addLayout(self.list_lay)
+        self.list_lay.setContentsMargins(0, 0, 0, 0)
         self.list_lay.setSpacing(0)
         self.list.hide()
         lay.addWidget(self.list)
@@ -85,14 +100,15 @@ class TreePicker(QWidget):
             w = self.list_lay.takeAt(0).widget()
             w.deleteLater()
         for i, spec in enumerate(specs):
-            b = QPushButton(f"{i + 1}. {spec.title}")
+            b = QPushButton(f"{'✓' if i == current else '   '}  {spec.title}")
             b.setObjectName("item")
             b.setProperty("current", i == current)
             b.setFocusPolicy(Qt.NoFocus)
             b.clicked.connect(lambda _=False, i=i: self._pick(i))
             self.list_lay.addWidget(b)
-        arrow = "▾" if len(specs) > 1 else ""
-        self.title.setText(f"{arrow} {specs[current].title}  ({current + 1}/{len(specs)})" if specs else "No build loaded")
+        arrow = "  ▾" if len(specs) > 1 else ""
+        self.title.setText(f"{specs[current].title}{arrow}" if specs else "No build loaded")
+        self.title.setToolTip(f"Tree {current + 1} of {len(specs)}" if specs else "")
         self.title.setEnabled(len(specs) > 1)
         self._fit()
 

@@ -3,6 +3,10 @@
     python -m unittest tests.test_units
 """
 import base64
+import hashlib
+import os
+import tempfile
+import time
 import struct
 import sys
 import unittest
@@ -11,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from treeoverlay import build, character, updater  # noqa: E402
+from treeoverlay import build, character, pob, updater  # noqa: E402
 from treeoverlay.progress import Plan, merge_allocations  # noqa: E402
 from treeoverlay.tree import PassiveTree  # noqa: E402
 
@@ -192,6 +196,48 @@ class Site(unittest.TestCase):
         # screen read 2 as unallocated (refunded since), and 4 as allocated (taken since)
         self.assertEqual(merge_allocations({4}, {2, 4}, site), {1, 3, 4})
         self.assertEqual(merge_allocations({4}, {2, 4}, None), {4})
+
+
+class PathOfBuilding(unittest.TestCase):
+    def test_title(self):
+        self.assertEqual(pob.name_from_title("CRAB TOTEM (Hierophant) - Path of Building"), "CRAB TOTEM")
+        self.assertEqual(pob.name_from_title("Worb leveling  (Witch) - Path of Building"), "Worb leveling ")
+        self.assertEqual(pob.name_from_title("Flicker (2.0) (Raider) - Path of Building"), "Flicker (2.0)")
+        self.assertIsNone(pob.name_from_title("Path of Building"))
+        self.assertIsNone(pob.name_from_title("pobb.in - Path of Building - Google Chrome"))
+
+    def _user_dir(self, mode):
+        d = Path(tempfile.mkdtemp())
+        (d / "Builds" / "League").mkdir(parents=True)
+        (d / "Settings.xml").write_text(
+            f'<PathOfBuilding>{mode}<Accounts lastAccountName="Someone#1234" lastRealm="PC"/>'
+            '<Misc showTitlebarName="true"/></PathOfBuilding>', encoding="utf-8")
+        return d
+
+    def test_settings(self):
+        d = self._user_dir('<Mode mode="LIST"><Arg string="Crab"/><Arg string="League/"/></Mode>')
+        st = pob.read_settings([d])
+        self.assertEqual(st.build_dir, d / "Builds")
+        self.assertEqual(st.last_build, d / "Builds" / "League" / "Crab.xml")
+        self.assertEqual((st.account, st.realm), ("Someone#1234", "pc"))
+        d = self._user_dir('<Mode mode="BUILD"><Arg string="C:/x/Crab.xml"/><Arg string="Crab"/></Mode>')
+        self.assertEqual(pob.read_settings([d]).last_build, Path("C:/x/Crab.xml"))
+        self.assertIsNone(pob.read_settings([Path(tempfile.mkdtemp())]))
+
+    def test_builds_and_character(self):
+        d = self._user_dir("")
+        old, new = d / "Builds" / "Crab.xml", d / "Builds" / "League" / "Crab.xml"
+        old.write_text(XML, encoding="utf-8")
+        h = hashlib.sha1("CrabGuy".encode()).hexdigest()
+        new.write_text(XML.replace("<Tree", f'<Import lastCharacterHash="{h}"/><Tree'), encoding="utf-8")
+        os.utime(old, (time.time() - 100, time.time() - 100))
+        builds = pob.list_builds(d / "Builds")
+        self.assertEqual([(b.name, b.folder) for b in builds], [("Crab", "League"), ("Crab", "")])
+        self.assertEqual(pob.find_build("Crab", builds).path, new)                 # newest
+        self.assertEqual(pob.find_build("Crab", builds, prefer=old).path, old)     # the one PoB opened
+        self.assertIsNone(pob.find_build("Other", builds))
+        self.assertEqual(pob.character_for(new, ["Someone", "CrabGuy"]), "CrabGuy")
+        self.assertIsNone(pob.character_for(old, ["CrabGuy"]))
 
 
 if __name__ == "__main__":

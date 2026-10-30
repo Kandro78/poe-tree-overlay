@@ -1,6 +1,7 @@
 """The settings window: everything that used to need editing settings.json."""
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout)
+from PySide6.QtWidgets import QComboBox, QDialog, QDoubleSpinBox, QHBoxLayout, QPushButton, QSpinBox, QVBoxLayout
+
+from . import theme
 
 KEYS = [f"F{i}" for i in range(1, 13)]
 ACTIONS = [("next_tree", "Next tree of the build"), ("calibrate", "Calibrate"),
@@ -13,27 +14,25 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Settings")
         self.settings = settings
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 14, 20, 18)
+        lay.setSpacing(6)
 
-        shown = QGroupBox("Overlay")
-        f = QFormLayout(shown)
-        self.labels = QCheckBox("Names for upcoming notables and mastery choices")
+        self.labels = theme.Switch()
         self.labels.setChecked(settings["show_labels"])
-        self.progress = QCheckBox("Read which passives are allocated")
+        self.progress = theme.Switch()
         self.progress.setChecked(settings["show_progress"])
         self.route = QSpinBox()
         self.route.setRange(0, 30)
         self.route.setValue(settings["route_length"])
         self.route.setSuffix(" points")
-        self.auto_next = QCheckBox("Switch to the next tree when one is complete")
+        self.auto_next = theme.Switch()
         self.auto_next.setChecked(settings["auto_next_tree"])
-        f.addRow(self.labels)
-        f.addRow(self.progress)
-        f.addRow("Number the next", self.route)
-        f.addRow(self.auto_next)
-        lay.addWidget(shown)
+        shown = theme.Card()
+        shown.add(theme.row("Names of upcoming notables and masteries", self.labels))
+        shown.add(theme.row("Read which passives are allocated", self.progress))
+        shown.add(theme.row("Number the next", self.route))
+        shown.add(theme.row("Switch to the next tree when one is complete", self.auto_next))
 
-        game = QGroupBox("Game")
-        g = QFormLayout(game)
         self.ui_scale = QDoubleSpinBox()
         self.ui_scale.setRange(50, 200)
         self.ui_scale.setDecimals(0)
@@ -45,39 +44,53 @@ class SettingsDialog(QDialog):
         self.fps = QSpinBox()
         self.fps.setRange(2, 30)
         self.fps.setValue(settings["fps"])
-        self.fps.setSuffix(" checks/s while idle")
-        g.addRow("In-game UI scale", self.ui_scale)
-        g.addRow("Account realm", self.realm)
-        g.addRow("Tree still", self.fps)
-        lay.addWidget(game)
+        self.fps.setSuffix(" per second")
+        game = theme.Card()
+        game.add(theme.row("In-game UI scale", self.ui_scale))
+        game.add(theme.row("Account realm", self.realm))
+        game.add(theme.row("Checks while the tree stands still", self.fps))
 
-        keys = QGroupBox("Hotkeys (read only, the game still gets the key)")
-        k = QFormLayout(keys)
         self.keys = {}
+        keys = theme.Card()
         for action, label in ACTIONS:
             box = QComboBox()
-            box.addItems(["off"] + KEYS)
-            box.setCurrentText(settings["keys"].get(action) or "off")
+            box.addItems(["Off"] + KEYS)
+            box.setCurrentText(settings["keys"].get(action) or "Off")
+            box.setMinimumWidth(90)
             self.keys[action] = box
-            k.addRow(label, box)
-        lay.addWidget(keys)
+            keys.add(theme.row(label, box))
 
-        app = QGroupBox("Program")
-        a = QHBoxLayout(app)
-        self.minimized = QCheckBox("Start minimized")
+        self.minimized = theme.Switch()
         self.minimized.setChecked(settings.get("start_minimized", False))
-        a.addWidget(self.minimized)
-        lay.addWidget(app)
+        program = theme.Card()
+        program.add(theme.row("Start minimized", self.minimized))
 
-        lay.addWidget(QLabel("<span style='color:gray'>UI scale and realm apply right away; "
-                             "nothing here needs a restart.</span>"))
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        lay.addWidget(buttons)
+        for i, (name, card) in enumerate((("Overlay", shown), ("Game", game),
+                                          ("Hotkeys (the game still gets the key)", keys), ("Program", program))):
+            if i:
+                lay.addSpacing(8)
+            lay.addWidget(theme.section(name))
+            lay.addWidget(card)
+        lay.addSpacing(6)
+        lay.addWidget(theme.caption("Everything applies right away, nothing needs a restart."))
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        cancel, ok = QPushButton("Cancel"), QPushButton("Done")
+        ok.setObjectName("primary")
+        ok.setDefault(True)
+        cancel.clicked.connect(self.reject)
+        ok.clicked.connect(self.accept)
+        buttons.addStretch(1)
+        buttons.addWidget(cancel)
+        buttons.addWidget(ok)
+        lay.addSpacing(8)
+        lay.addLayout(buttons)
+        self.setMinimumWidth(500)
+        theme.title_bar(self)
 
     def values(self):
-        """The settings as they should be after OK."""
+        """The settings as they should be after Done."""
         out = dict(self.settings)
         out.update({
             "show_labels": self.labels.isChecked(),
@@ -88,6 +101,6 @@ class SettingsDialog(QDialog):
             "realm": self.realm.currentText(),
             "fps": self.fps.value(),
             "start_minimized": self.minimized.isChecked(),
-            "keys": {a: (b.currentText() if b.currentText() != "off" else "") for a, b in self.keys.items()},
+            "keys": {a: (b.currentText() if b.currentText() != "Off" else "") for a, b in self.keys.items()},
         })
         return out

@@ -39,10 +39,16 @@ Data and settings then live in the project folder (`data/`, `settings.json`).
 
 1. Run the game in **Windowed Fullscreen** (or windowed). Exclusive fullscreen
    hides overlays.
-2. Paste the build into the control window and press **Load**, or pick a PoB
-   file. Choose the tree in the drop-down (e.g. a leveling stage).
-3. Optional: enter your pathofexile.com account (`Name#1234`), press **Get
-   characters** and pick the one you play. The Characters tab of your profile
+2. Pick the build: with Path of Building Community installed, the overlay
+   lists your PoB builds and, with **Follow the build open in Path of
+   Building** on, switches to whatever build PoB shows (read from PoB's window
+   title). Saving in PoB (Ctrl+S) updates the overlay; if you changed PoB's
+   active tree, the overlay follows it. Or paste a PoB code, pobb.in link or
+   tree URL and press **Load**. Choose the tree in the drop-down (e.g. a
+   leveling stage).
+3. Optional: enter your pathofexile.com account (`Name#1234`; taken from PoB
+   if you imported there), press **Get characters** and pick the one you play.
+   A build imported from a character in PoB picks that character by itself. The Characters tab of your profile
    must be public (Privacy Settings on pathofexile.com). Without it, the
    overlay learns what's allocated by looking at the tree as you pan.
 4. Open the passive tree in game. The status line shows *Locked* once it's found.
@@ -73,6 +79,10 @@ it. Builds made for a different tree version are flagged in the build info line.
 
 * **Build input** (`build.py`): Path of Building codes, pobb.in and pastebin
   links, `pathofexile.com/passive-skill-tree/...` URLs and PoB `.xml` files.
+* **Path of Building** (`pob.py`): reads PoB's `Settings.xml` (builds folder,
+  account), its window title (the open build) and the build files (reloaded
+  when saved; `<Import lastCharacterHash>` is sha1 of the character name).
+  Nothing in PoB is changed.
 * **Tree data** (`tree.py`, `updater.py`): GGG's
   [skilltree-export](https://github.com/grindinggear/skilltree-export); node
   positions are computed the same way as in Path of Building.

@@ -13,3 +13,4 @@ data/asc_*
 build/
 dist/
 soak.csv
+data/ui/

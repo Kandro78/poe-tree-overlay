@@ -15,11 +15,11 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel,
                                QLineEdit, QMenu, QMessageBox, QProgressDialog, QPushButton, QSystemTrayIcon,
                                QVBoxLayout, QWidget)
 
-from . import build, character, updater
+from . import build, character, pob, theme, updater
 from .ascendancy import AscendancyFinder
 from .capture import Capture
 from .cluster import ClusterLayout
@@ -32,7 +32,7 @@ from .tree import CLASS_NAMES, DATA_DIR, PassiveTree
 ROOT = DATA_DIR.parent
 SETTINGS = ROOT / "settings.json"
 DEFAULTS = {"last_input": "", "spec": -1, "mask_rects": None, "ui_scale": 1.0, "fps": 8, "show_progress": True,
-            "start_minimized": False,
+            "start_minimized": False, "follow_pob": True,
             "account": "", "character": "", "realm": "pc",
             "show_labels": True, "route_length": 8, "auto_next_tree": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
 
@@ -277,7 +277,8 @@ class Worker(QThread):
             trace(k="track", tc=cursor[3], tg=grabbed, done=clock(), cx=cursor[0], cy=cursor[1], down=cursor[2],
                   tx=t.tx, ty=t.ty, s=t.scale, path=self.tracker.last_path)
         self.located.emit(t, rect, progress, cursor)
-        self.status.emit(f"{'Locked' if t else 'Searching'} · {self.tracker.last_path} · {self.tracker.last_inliers} matches · "
+        state = "Locked" if t else "Tree closed" if self.tracker.last_path == "closed" else "Searching"
+        self.status.emit(f"{state} · {self.tracker.last_path} · {self.tracker.last_inliers} matches · "
                          f"{self.tracker.last_ms:.0f} ms · map {len(self.tracker.map_pts) - self.tracker.n_ref}"
                          f"{'' if self.tracker.gate is not None else ' · learning tree screen'}")
         # while the picture changes, go again right away; when it stands still, idle
@@ -573,10 +574,13 @@ class Overlay(QWidget):
         return path
 
     def _label(self, p, x, y, text, color, size):
-        p.setFont(QFont("Segoe UI", size, QFont.DemiBold))
+        p.setFont(QFont(theme.font_family(), size, QFont.DemiBold))
         rect = p.fontMetrics().boundingRect(text)
-        box = QRectF(x, y - rect.height() / 2 - 3, rect.width() + 12, rect.height() + 6)
-        p.fillRect(box, QColor(0, 0, 0, 170))
+        box = QRectF(x, y - rect.height() / 2 - 4, rect.width() + 18, rect.height() + 8)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(28, 28, 30, 200))
+        p.drawRoundedRect(box, box.height() / 2, box.height() / 2)
+        p.setBrush(Qt.NoBrush)
         p.setPen(color)
         p.drawText(box, Qt.AlignCenter, text)
 
@@ -595,10 +599,13 @@ class Overlay(QWidget):
         p.scale(1 / dpr, 1 / dpr)  # draw in physical pixels
         w, h = self.width() * dpr, self.height() * dpr
         if self.message:
-            p.setFont(QFont("Segoe UI", 16, QFont.Bold))
+            p.setFont(QFont(theme.font_family(), 16, QFont.DemiBold))
             box = QRectF(w / 2 - 520, 0.2 * h, 1040, 64)
-            p.fillRect(box, QColor(0, 0, 0, 190))
-            p.setPen(QColor(255, 220, 120))
+            p.setPen(QPen(QColor(255, 255, 255, 30), 1.5))
+            p.setBrush(QColor(28, 28, 30, 225))
+            p.drawRoundedRect(box, 18, 18)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QColor(245, 245, 247))
             p.drawText(box, Qt.AlignCenter, self.message)
         t = self.transform
         if t is None or self.plan is None:
@@ -677,7 +684,7 @@ class Overlay(QWidget):
             self._label(p, x, y, text, color, size)
         # the order to take the next points in
         br = max(12.0, 34 * s)
-        p.setFont(QFont("Segoe UI", max(7, int(br * 0.75)), QFont.Bold))
+        p.setFont(QFont(theme.font_family(), max(7, int(br * 0.75)), QFont.Bold))
         for x, y, number in badges:
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(255, 255, 255, 230) if number == 1 else QColor(20, 20, 20, 220))
@@ -727,6 +734,16 @@ class Overlay(QWidget):
         return line
 
 
+class PopupCombo(QComboBox):
+    def __init__(self, before_popup):
+        super().__init__()
+        self.before_popup = before_popup
+
+    def showPopup(self):
+        self.before_popup()
+        super().showPopup()
+
+
 class ControlWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -737,58 +754,104 @@ class ControlWindow(QWidget):
         self.spec = None
         self.calib_points = []
 
+        keys = self.settings["keys"]
+        self.setObjectName("root")
         self.input = QLineEdit(self.settings["last_input"])
-        self.input.setPlaceholderText("Path of Building code, pobb.in link, tree URL or .xml path")
+        self.input.setPlaceholderText("Or paste a PoB code, pobb.in link or tree URL")
         load_btn = QPushButton("Load")
-        file_btn = QPushButton("PoB file…")
+        load_btn.setObjectName("primary")
+        file_btn = QPushButton("Open PoB File…")
         self.spec_box = QComboBox()
-        self.info = QLabel("Load a build to start.")
-        self.info.setWordWrap(True)
-        self.status = QLabel("Starting…")
-        self.show_box = QCheckBox(f"Show overlay ({self.settings['keys']['toggle']})")
+        self.spec_box.setMinimumWidth(260)
+        self.info = theme.caption("Load a build to start.")
+        self.status = QLabel("Starting")
+        self.status.setObjectName("pill")
+        self.show_box = theme.Switch()
         self.show_box.setChecked(True)
-        cal_btn = QPushButton(f"Calibrate ({self.settings['keys']['calibrate']})")
-        reset_btn = QPushButton(f"Clear learned map ({self.settings['keys']['reset']})")
-        update_btn = QPushButton("Update tree data")
+        cal_btn = QPushButton("Calibrate")
+        cal_btn.setToolTip(f"Hover the class start, press {keys['calibrate']}; hover the named notable, "
+                           f"press {keys['calibrate']}. Only needed if the rings sit in the wrong place.")
+        reset_btn = QPushButton("Clear Learned Map")
+        reset_btn.setToolTip(f"Forget the learned map and the allocation readings ({keys['reset']})")
+        update_btn = QPushButton("Update Tree Data")
+        update_btn.setToolTip("Fetch the newest passive tree from GGG (after a new league)")
         settings_btn = QPushButton("Settings…")
-        self.labels_box = QCheckBox("Labels")
+        self.labels_box = theme.Switch()
         self.labels_box.setChecked(self.settings["show_labels"])
-        self.progress_box = QCheckBox("Track allocated passives")
+        self.progress_box = theme.Switch()
         self.progress_box.setChecked(self.settings["show_progress"])
         self.account = QLineEdit(self.settings["account"])
-        self.account.setPlaceholderText("pathofexile.com account, e.g. Name#1234 (optional)")
-        chars_btn = QPushButton("Get characters")
+        self.account.setPlaceholderText("pathofexile.com account, e.g. Name#1234")
+        chars_btn = QPushButton("Get Characters")
         self.char_box = QComboBox()
-        self.char_box.setMinimumWidth(220)
+        self.char_box.setMinimumWidth(260)
         if self.settings["character"]:
             self.char_box.addItem(self.settings["character"])
-        self.site_status = QLabel("")
-        self.site_status.setWordWrap(True)
-        self.site_status.setStyleSheet("color: gray")
+        self.site_status = theme.caption("Optional. The Characters tab of the profile must be public.")
 
-        row = QHBoxLayout(); row.addWidget(self.input, 1); row.addWidget(load_btn); row.addWidget(file_btn)
-        row2 = QHBoxLayout(); row2.addWidget(QLabel("Tree:")); row2.addWidget(self.spec_box, 1)
-        row_site = QHBoxLayout(); row_site.addWidget(QLabel("Character:")); row_site.addWidget(self.account, 1)
-        row_site.addWidget(chars_btn); row_site.addWidget(self.char_box)
-        row3 = QHBoxLayout(); row3.addWidget(self.show_box); row3.addWidget(self.progress_box); row3.addWidget(self.labels_box)
-        row3.addStretch(); row3.addWidget(cal_btn); row3.addWidget(reset_btn); row3.addWidget(update_btn)
-        row3.addWidget(settings_btn)
+        # Path of Building: its builds, the one it has open, reload on save
+        self.pob = pob.read_settings()
+        self.pob_box = PopupCombo(self.refresh_pob_builds)
+        self.pob_box.setMinimumWidth(260)
+        self.pob_box.setPlaceholderText("Choose a build")
+        self.pob_builds = []
+        self.follow_box = theme.Switch()
+        self.follow_box.setChecked(self.settings["follow_pob"])
+        self.pob_status = theme.caption("")
+        self._pob_open = None          # build name in PoB's title at the last look
+        self._watch = None             # (path, mtime) of the loaded build file
+        self._file_active = None       # the file's active tree at the last load
+
+        header = QHBoxLayout()
+        icon = QLabel()
+        icon.setPixmap(app_icon().pixmap(34, 34))
+        title = QLabel("PoE Tree Overlay")
+        title.setObjectName("title")
+        header.addWidget(icon); header.addSpacing(4); header.addWidget(title); header.addStretch(1)
+        header.addWidget(self.status)
+
+        build = theme.Card()
+        if self.pob is not None:
+            build.add(theme.row("Path of Building", self.pob_box))
+            build.add(theme.row("Follow the build open in Path of Building", self.follow_box), self.pob_status)
+        source = QHBoxLayout(); source.setSpacing(8)
+        source.addWidget(self.input, 1); source.addWidget(file_btn); source.addWidget(load_btn)
+        build.add(source)
+        build.add(theme.row("Tree", self.spec_box), self.info)
+
+        char = theme.Card()
+        acc = QHBoxLayout(); acc.setSpacing(8)
+        acc.addWidget(self.account, 1); acc.addWidget(chars_btn)
+        char.add(acc)
+        char.add(theme.row("Character", self.char_box), self.site_status)
+
+        shown = theme.Card()
+        shown.add(theme.row("Show overlay", self.show_box, key=keys["toggle"] or None))
+        shown.add(theme.row("Track allocated passives", self.progress_box))
+        shown.add(theme.row("Names of upcoming notables and masteries", self.labels_box))
+
+        tools = QHBoxLayout(); tools.setSpacing(8)
+        for b in (cal_btn, reset_btn, update_btn):
+            tools.addWidget(b)
+        tools.addStretch(1); tools.addWidget(settings_btn)
+
         lay = QVBoxLayout(self)
-        for r in (row, row2, row_site):
-            lay.addLayout(r)
-        lay.addWidget(self.site_status)
-        lay.addWidget(self.info)
-        lay.addLayout(row3)
-        lay.addWidget(self.status)
-        help_text = QLabel(
-            "Run the game in <b>Windowed Fullscreen</b>. Open the passive tree (P): the overlay finds it by itself.<br>"
-            "<b>{n}</b> switches between the build's trees (e.g. leveling stages). If the rings sit in the wrong place, "
-            "press <b>{c}</b> and follow the two prompts.".format(c=self.settings["keys"]["calibrate"],
-                                                                   n=self.settings["keys"]["next_tree"]))
-        help_text.setWordWrap(True)
-        help_text.setStyleSheet("color: gray")
+        lay.setContentsMargins(20, 16, 20, 18)
+        lay.setSpacing(6)
+        lay.addLayout(header)
+        for name, card in (("Build", build), ("pathofexile.com", char), ("Overlay", shown)):
+            lay.addSpacing(10)
+            lay.addWidget(theme.section(name))
+            lay.addWidget(card)
+        lay.addSpacing(12)
+        lay.addLayout(tools)
+        help_text = theme.caption(
+            "Run the game in Windowed Fullscreen and open the passive tree (P): the overlay finds it by itself. "
+            "{n} switches between the build's trees.".format(n=keys["next_tree"] or "The panel on the tree screen"))
+        lay.addSpacing(4)
         lay.addWidget(help_text)
-        self.resize(760, 260)
+        self.setMinimumWidth(640)
+        self.resize(700, 0)
 
         # allocated passives from pathofexile.com (all of the tree, not only what was seen)
         self.site = SiteFetcher()
@@ -807,7 +870,7 @@ class ControlWindow(QWidget):
         self.picker.reread.connect(self.reread)
         self.worker.located.connect(self.on_located)
         self.worker.asc_located.connect(self.overlay.set_ascendancy_panel)
-        self.worker.status.connect(self.status.setText)
+        self.worker.status.connect(self.set_status)
         if os.environ.get("TREEOVERLAY_LOG"):
             self.worker.status.connect(lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
         self.worker.start()
@@ -832,10 +895,118 @@ class ControlWindow(QWidget):
         self.key_state = {}
         self.hotkeys = QTimer(self, interval=30, timeout=self.poll_keys)
         self.hotkeys.start()
-        if self.input.text():
-            QTimer.singleShot(0, lambda: self.load(self.input.text(), quiet=True))
+        self.pob_box.activated.connect(self.choose_pob_build)
+        self.follow_box.toggled.connect(self.set_follow_pob)
+        last = self.settings["last_input"]
+        if last:
+            QTimer.singleShot(0, lambda: self.load(last, mode="startup"))
         if self.settings["account"] and self.settings["character"]:
             QTimer.singleShot(0, self.refresh_site)
+        if self.pob is not None:
+            self.refresh_pob_builds()
+            if not self.settings["account"] and self.pob.account:
+                # the account PoB imports from is the one to read passives from
+                self.account.setText(self.pob.account)
+                self.settings["realm"] = self.pob.realm
+                QTimer.singleShot(0, self.get_characters)
+            self.pob_timer = QTimer(self, interval=1000, timeout=self.poll_pob)
+            self.pob_timer.start()
+            QTimer.singleShot(0, self.poll_pob)
+
+    def set_status(self, text):
+        """The pill at the top right: the short state, the details on hover."""
+        short = text.split(" · ")[0]
+        if short.startswith("Ready"):
+            short = "Ready"
+        elif short == "Path of Exile window not found":
+            short = "Game not running"
+        state = ("ok" if short == "Locked" else "warn" if short == "Searching"
+                 else "bad" if short.startswith("Error") else "")
+        if len(short) > 40:
+            short = short[:39] + "…"
+        self.status.setText(short)
+        self.status.setToolTip(text)
+        if self.status.property("state") != state:
+            self.status.setProperty("state", state)
+            self.status.style().unpolish(self.status)
+            self.status.style().polish(self.status)
+
+    # -- Path of Building ---------------------------------------------------------
+    def refresh_pob_builds(self):
+        """The builds list, newest first; read again whenever it's opened."""
+        self.pob_builds = pob.list_builds(self.pob.build_dir)
+        self.pob_box.blockSignals(True)
+        self.pob_box.clear()
+        for b in self.pob_builds:
+            self.pob_box.addItem(b.name.strip())
+            self.pob_box.setItemData(self.pob_box.count() - 1, b.folder or "Builds", Qt.ToolTipRole)
+        self._show_loaded_build()
+        self.pob_box.blockSignals(False)
+
+    def _loaded_file(self):
+        return self._watch[0] if self._watch else None
+
+    def _show_loaded_build(self):
+        loaded = self._loaded_file()
+        idx = next((i for i, b in enumerate(self.pob_builds) if loaded is not None and b.path == loaded), -1)
+        self.pob_box.setCurrentIndex(idx)
+
+    def choose_pob_build(self, idx):
+        if 0 <= idx < len(self.pob_builds):
+            self.load(str(self.pob_builds[idx].path), mode="pob")
+
+    def set_follow_pob(self, on):
+        self._setting("follow_pob", on)
+        self._pob_open = None          # look again right away
+        self.poll_pob()
+
+    def poll_pob(self):
+        """Every second: follow the build PoB shows, reload the file when it's saved."""
+        name = pob.open_build_name() if self.settings["follow_pob"] else None
+        if name is not None and name != self._pob_open:
+            builds = pob.list_builds(self.pob.build_dir)
+            hit = pob.find_build(name, builds, prefer=self._loaded_file() or self.pob.last_build)
+            if hit is None:
+                self.pob_status.setText(f"“{name.strip()}” is open in Path of Building but not saved yet.")
+            else:
+                self._pob_open = name
+                if hit.path != self._loaded_file():
+                    self.load(str(hit.path), mode="pob")
+        elif name is None:
+            self._pob_open = None
+        if self._watch:
+            path, mtime = self._watch
+            try:
+                now = path.stat().st_mtime
+            except OSError:
+                now = mtime
+            if now != mtime:
+                self.load(str(path), mode="reload")
+        self._pob_caption(name)
+
+    def _pob_caption(self, open_name):
+        loaded = self._loaded_file()
+        if not self.settings["follow_pob"]:
+            text = "Pick a build above; it reloads whenever you save it in Path of Building."
+        elif open_name is None:
+            text = "Path of Building isn't showing a build. Open one there, or pick one above."
+        elif loaded is not None and loaded.stem == open_name:
+            text = f"Following “{open_name.strip()}”. Saving in Path of Building (Ctrl+S) updates the overlay."
+        else:
+            return      # the not-saved-yet note stays
+        self.pob_status.setText(text)
+
+    def _match_character(self):
+        """Pick the character the loaded build was imported from in PoB."""
+        loaded = self._loaded_file()
+        if loaded is None or not self.char_box.count():
+            return
+        names = [self.char_box.itemText(i) for i in range(self.char_box.count())]
+        name = pob.character_for(loaded, names)
+        if name and name != self.settings["character"]:
+            self.char_box.setCurrentText(name)
+            self.choose_character(name)
+            self.site_status.setText(f"{name}: the character this build was imported from in Path of Building.")
 
     # -- pathofexile.com --------------------------------------------------------
     def get_characters(self):
@@ -862,6 +1033,7 @@ class ControlWindow(QWidget):
             self.char_box.setCurrentText(current)
         self.site_status.setText(f"{len(chars)} characters. Pick the one you're playing.")
         self.choose_character(self.char_box.currentText())
+        self._match_character()
 
     def choose_character(self, name):
         if not name:
@@ -994,30 +1166,56 @@ class ControlWindow(QWidget):
 
     # -- build -----------------------------------------------------------
     def pick_file(self):
-        start = str(Path.home() / "Documents" / "Path of Building" / "Builds")
+        start = str(self.pob.build_dir if self.pob else pob.documents_dir() / "Path of Building" / "Builds")
         path, _ = QFileDialog.getOpenFileName(self, "Path of Building build", start, "PoB builds (*.xml)")
         if path:
-            self.input.setText(path)
             self.load(path)
 
-    def load(self, text, quiet=False):
+    def load(self, text, mode="user"):
+        """mode: "user" (typed or picked), "startup" (the last build, on the tree
+        used last), "pob" (followed from Path of Building, on its active tree) or
+        "reload" (the file was saved: same tree, unless PoB's active one changed)."""
         try:
             specs, active = build.load(text)
         except Exception as exc:
-            if not quiet:
+            if mode == "user":
                 QMessageBox.warning(self, "Could not load build", str(exc))
-            return
+            return    # a reload may have caught PoB mid-save: the next look tries again
+        text = text.strip().strip('"')
+        path = Path(text)
+        is_file = len(text) < 260 and path.is_file()
+        if mode == "reload":
+            idx = active if active != self._file_active else self.spec_box.currentIndex()
+        elif mode == "startup" and 0 <= self.settings.get("spec", -1) < len(specs):
+            idx = self.settings["spec"]
+        else:
+            idx = active
+        idx = max(0, min(idx, len(specs) - 1))
+        self._file_active = active
+        self._watch = (path, path.stat().st_mtime) if is_file else None
         self.specs = specs
-        self.settings["last_input"] = text.strip()
+        self.settings["last_input"] = text
         save_settings(self.settings)
+        # the paste field is for codes and links; files show in the builds list
+        if is_file and self.pob is not None:
+            self.input.clear()
+        else:
+            self.input.setText(text)
         self.spec_box.blockSignals(True)
         self.spec_box.clear()
         for s in specs:
             self.spec_box.addItem(f"{s.title}  ({len(s.nodes)} nodes)")
-        idx = self.settings["spec"] if 0 <= self.settings.get("spec", -1) < len(specs) and quiet else active
         self.spec_box.setCurrentIndex(idx)
         self.spec_box.blockSignals(False)
         self.choose_spec(idx)
+        if self.pob is not None:
+            self._show_loaded_build()
+        if is_file:
+            if mode == "reload":
+                self.picker.show_toast("Updated from Path of Building")
+            elif mode == "pob":
+                self.picker.show_toast(f"Path of Building: {path.stem.strip()}")
+            self._match_character()
 
     def choose_spec(self, idx):
         if not 0 <= idx < len(self.specs):
@@ -1187,11 +1385,13 @@ def main():
     app.setQuitOnLastWindowClosed(False)    # it lives on in the tray
     app.setWindowIcon(app_icon())
     app.aboutToQuit.connect(lambda: winmm.timeEndPeriod(1))
+    theme.apply(app)
     if not ensure_tree_data(app):
         sys.exit(1)
     w = ControlWindow()
     w.destroyed.connect(app.quit)
     w.setAttribute(Qt.WA_DeleteOnClose)
+    theme.title_bar(w)
     if w.settings.get("start_minimized") or os.environ.get("TREEOVERLAY_MINIMIZED"):
         w.showMinimized()   # stay out of the game's way
     else:

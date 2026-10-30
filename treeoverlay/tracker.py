@@ -229,6 +229,7 @@ class Tracker:
             # Tree not open: skip the expensive search and keep the last view,
             # the game usually reopens the tree where it was.
             self.last_inliers = self.last_ref = 0
+            self.last_path = "closed"
             result = None
         else:
             result = self._localise(frame)
