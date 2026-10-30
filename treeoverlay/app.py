@@ -14,7 +14,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtCore import QRect
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QRegion
+from PySide6.QtGui import (QAction, QColor, QFont, QFontMetricsF, QIcon, QPainter, QPainterPath, QPen, QPixmap,
+                           QRegion)
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel,
                                QLineEdit, QMenu, QMessageBox, QProgressDialog, QPushButton, QSystemTrayIcon,
                                QVBoxLayout, QWidget)
@@ -141,7 +142,7 @@ class Worker(QThread):
     """Captures the game window and runs the tracker."""
     # Transform or None, game rect, (allocated, seen, covered rects) or None,
     # (cursor x, cursor y, left button down) at the moment of the capture
-    located = Signal(object, object, object, object)
+    located = Signal(object, object, object, object, object)   # transform, rect, progress, cursor, path
     # ascendancy panel: (Transform, (x, y, radius)) while it's open, else None
     asc_located = Signal(object)
     status = Signal(str)
@@ -217,7 +218,7 @@ class Worker(QThread):
         except queue.Empty:
             req = None
         if rect is None:
-            self.located.emit(None, None, None, None)
+            self.located.emit(None, None, None, None, None)
             self.status.emit("Path of Exile window not found")
             time.sleep(1.0)
             return
@@ -239,7 +240,7 @@ class Worker(QThread):
         if not self.enabled or not in_front:
             if req not in (None, "reset", "reset_alloc"):
                 self.requests.put(req)  # keep a calibration for when the game is in front
-            self.located.emit(None, rect, None, None)
+            self.located.emit(None, rect, None, None, None)
             time.sleep(0.2)
             return
         if rect[2:] != getattr(self, "_gate_size", None):
@@ -282,7 +283,7 @@ class Worker(QThread):
         if t is not None:
             trace(k="track", tc=cursor[3], tg=grabbed, done=clock(), cx=cursor[0], cy=cursor[1], down=cursor[2],
                   tx=t.tx, ty=t.ty, s=t.scale, path=self.tracker.last_path)
-        self.located.emit(t, rect, progress, cursor)
+        self.located.emit(t, rect, progress, cursor, self.tracker.last_path)
         state = "Locked" if t else "Tree closed" if self.tracker.last_path == "closed" else "Searching"
         self.status.emit(f"{state} · {self.tracker.last_path} · {self.tracker.last_inliers} matches · "
                          f"{self.tracker.last_ms:.0f} ms · map {len(self.tracker.map_pts) - self.tracker.n_ref}"
@@ -337,7 +338,10 @@ class Overlay(QWidget):
         self.transform = None
         self.rect_px = None
         self.message = ""            # calibration prompts
-        self.pulse = QTimer(self, interval=60, timeout=self._tick)   # animates the "next" rings
+        self.pulse = QTimer(self, interval=33, timeout=self._tick)   # animates the "next" rings and the fade
+        # Rings fade in after the tree was found and dim while the position is
+        # only estimated (a zoom step not yet checked against the map).
+        self.opacity, self.target_opacity = 0.0, 1.0
         # drag prediction: base = last tracker result, press = where the left button went down
         self.base, self.base_cursor, self.press, self.drag_follows = None, None, None, True
         self.drag_start = None   # first tracker result and cursor of the current drag
@@ -380,6 +384,9 @@ class Overlay(QWidget):
     def _tick(self):
         if self.transform is None:
             self.pulse.stop()
+        self.opacity += (self.target_opacity - self.opacity) * 0.35
+        if abs(self.target_opacity - self.opacity) < 0.01:
+            self.opacity = self.target_opacity
         self.update()
 
     def place(self, rect):
@@ -402,9 +409,15 @@ class Overlay(QWidget):
                          math.ceil(rect[2] / dpr), math.ceil(rect[3] / dpr))
         self.show()
 
-    def set_transform(self, t, cursor=None):
+    UNSURE = ("zoom-fast", "windowed")   # tracker results not yet confirmed against the map
+
+    def set_transform(self, t, cursor=None, path=None):
         """t: where the tracker found the tree in the frame captured while the
-        cursor was at `cursor`."""
+        cursor was at `cursor`; path: how the tracker got it."""
+        if t is None:
+            self.opacity = 0.0
+        else:
+            self.target_opacity = 0.4 if path in self.UNSURE else 1.0
         prev, prev_cursor = self.base, self.base_cursor
         self.base, self.base_cursor = t, cursor
         if (t is not None and prev is not None and cursor and prev_cursor and cursor[2]
@@ -579,16 +592,46 @@ class Overlay(QWidget):
             path.lineTo(*t.to_screen(nb.x, nb.y))
         return path
 
-    def _label(self, p, x, y, text, color, size):
-        p.setFont(QFont(theme.font_family(), size, QFont.DemiBold))
-        rect = p.fontMetrics().boundingRect(text)
-        box = QRectF(x, y - rect.height() / 2 - 4, rect.width() + 18, rect.height() + 8)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(28, 28, 30, 200))
-        p.drawRoundedRect(box, box.height() / 2, box.height() / 2)
-        p.setBrush(Qt.NoBrush)
-        p.setPen(color)
-        p.drawText(box, Qt.AlignCenter, text)
+    @staticmethod
+    def _ring(p, x, y, r, color, width):
+        """A ring with a thin dark rim under it, so it reads on bright tree art too."""
+        p.setPen(QPen(QColor(0, 0, 0, int(150 * color.alphaF())), width + max(2.0, width * 0.6)))
+        p.drawEllipse(QPointF(x, y), r, r)
+        p.setPen(QPen(color, width))
+        p.drawEllipse(QPointF(x, y), r, r)
+
+    @staticmethod
+    def _font(size, weight=QFont.DemiBold):
+        f = QFont(theme.font_family())
+        f.setPointSizeF(size)
+        f.setWeight(weight)
+        return f
+
+    def _place_labels(self, p, items, taken, w, h, scale):
+        """items: (priority, x, y, r, text, colour). Each name goes right of its
+        node, else left, above or below it; where every spot overlaps a name
+        or badge already placed it's left out. Lower priority goes first (the
+        next points before the rest)."""
+        p.setFont(self._font(min(12.5, max(10.0, 9.5 + 8 * scale))))
+        fm = QFontMetricsF(p.font())
+        for _, x, y, r, text, color in sorted(items, key=lambda i: i[0]):
+            tw, th = fm.horizontalAdvance(text) + 18, fm.height() + 6
+            gap = r + 6
+            for bx, by in ((x + gap, y - th / 2), (x - gap - tw, y - th / 2),
+                           (x - tw / 2, y - gap - th), (x - tw / 2, y + gap)):
+                box = QRectF(bx, by, tw, th)
+                if box.left() < 0 or box.top() < 0 or box.right() > w or box.bottom() > h:
+                    continue
+                if any(box.intersects(o) for o in taken):
+                    continue
+                taken.append(box)
+                p.setPen(QPen(QColor(255, 255, 255, 28), 1))
+                p.setBrush(QColor(22, 22, 24, 215))
+                p.drawRoundedRect(box, th / 2, th / 2)
+                p.setBrush(Qt.NoBrush)
+                p.setPen(color)
+                p.drawText(box, Qt.AlignCenter, text)
+                break
 
     def _mastery_text(self, node_id):
         effect = self.plan.spec.masteries.get(node_id)
@@ -627,19 +670,30 @@ class Overlay(QWidget):
             cx, cy, r = self.asc[1]
             clip -= QRegion(int(cx - r), int(cy - r), int(2 * r), int(2 * r), QRegion.Ellipse)
         p.setClipRegion(clip)
+        p.setOpacity(self.opacity)
         s = t.scale
         st = self.status
         done = st["done"] if st else set()
         nxt = st["next"] if st else set()
-        pulse = 0.5 + 0.5 * math.sin(time.time() * 5)
+        pulse = 0.5 + 0.5 * math.sin(time.time() * 4)
 
-        # connections: walked ones faint, the rest bright
-        for a, b in self.edges:
-            walked = (a in done or a == self.plan.start) and (b in done or b == self.plan.start)
-            pen = QPen(QColor(90, 255, 140, 60 if walked else 170), max(2.0, (8 if walked else 14) * s))
+        # connections: walked ones faint, the rest a soft line with a dark rim
+        rim = QPen(QColor(0, 0, 0, 90), max(3.0, 13 * s))
+        line = QPen(QColor(120, 255, 160, 150), max(2.0, 8 * s))
+        faint = QPen(QColor(120, 255, 160, 50), max(1.5, 6 * s))
+        for pen in (rim, line, faint):
             pen.setCapStyle(Qt.RoundCap)
+        paths = [(self._edge_path(t, a, b), (a in done or a == self.plan.start) and (b in done or b == self.plan.start))
+                 for a, b in self.edges]
+        p.setPen(faint)
+        for path, walked in paths:
+            if walked:
+                p.drawPath(path)
+        for pen in (rim, line):
             p.setPen(pen)
-            p.drawPath(self._edge_path(t, a, b))
+            for path, walked in paths:
+                if not walked:
+                    p.drawPath(path)
 
         p.setBrush(Qt.NoBrush)
         labels = []
@@ -658,54 +712,65 @@ class Overlay(QWidget):
                 continue
             if step_of.get(n.id) == 1:
                 grow = 1.25 + 0.15 * pulse
-                p.setPen(QPen(QColor(255, 255, 255, int(90 + 120 * pulse)), max(3.0, 8 * s)))
+                p.setPen(QPen(QColor(255, 255, 255, int(70 + 110 * pulse)), max(2.5, 7 * s)))
                 p.drawEllipse(QPointF(x, y), r * grow, r * grow)
-                p.setPen(QPen(color, max(3.5, 14 * s)))
+                self._ring(p, x, y, r, color, max(3.5, 14 * s))
             elif n.id in nxt:
-                p.setPen(QPen(color, max(3.0, 13 * s)))
+                self._ring(p, x, y, r, color, max(3.0, 13 * s))
             else:
-                p.setPen(QPen(color, max(2.5, 10 * s)))
-            p.drawEllipse(QPointF(x, y), r, r)
+                self._ring(p, x, y, r, color, max(2.5, 10 * s))
             if n.id in step_of:
                 badges.append((x + r * 0.75, y - r * 0.75, step_of[n.id]))
             # names for what to take next; zoomed in, for every notable/mastery left
             if self.settings["show_labels"] and (n.id in step_of or s >= LABEL_ZOOM):
+                order = step_of.get(n.id, 50 + ("keystone", "notable", "mastery").index(n.kind)
+                                    if n.kind in ("keystone", "notable", "mastery") else 99)
                 if n.kind == "mastery":
                     text = self._mastery_text(n.id)
                     if text:
-                        labels.append((x + r + 6, y, text, QColor(220, 180, 255)))
+                        labels.append((order, x, y, r, text, QColor(220, 180, 255)))
                 elif n.kind in ("notable", "keystone"):
-                    labels.append((x + r + 6, y, n.name, QColor(255, 225, 140)))
+                    labels.append((order, x, y, r, n.name, QColor(255, 225, 140)))
         # nodes the character took that the build doesn't use
         if st:
-            p.setPen(QPen(QColor(255, 60, 60, 220), max(2.5, 9 * s)))
             for nid in st["wrong"]:
                 n = self.tree.nodes[nid]
                 x, y = t.to_screen(n.x, n.y)
-                d = n.radius * s * 0.8
-                p.drawLine(QPointF(x - d, y - d), QPointF(x + d, y + d))
-                p.drawLine(QPointF(x - d, y + d), QPointF(x + d, y - d))
-        size = 10 if s < 0.2 else 12
-        for x, y, text, color in labels:
-            self._label(p, x, y, text, color, size)
-        # the order to take the next points in
-        br = max(12.0, 34 * s)
-        p.setFont(QFont(theme.font_family(), max(7, int(br * 0.75)), QFont.Bold))
+                d = n.radius * s * 0.6
+                for pen in (QPen(QColor(0, 0, 0, 120), max(4.0, 10 * s)), QPen(QColor(255, 80, 80, 190), max(2.0, 6 * s))):
+                    pen.setCapStyle(Qt.RoundCap)
+                    p.setPen(pen)
+                    p.drawLine(QPointF(x - d, y - d), QPointF(x + d, y + d))
+                    p.drawLine(QPointF(x - d, y + d), QPointF(x + d, y - d))
+        # the order to take the next points in; names keep clear of the badges
+        br = max(11.0, 30 * s)
+        taken = [QRectF(x - br, y - br, 2 * br, 2 * br) for x, y, _ in badges]
+        # names also keep clear of the game's UI and tooltips, where they'd be cut off
+        taken += [QRectF(x0 * w, y0 * h, (x1 - x0) * w, (y1 - y0) * h) for x0, y0, x1, y1 in self.ui_rects]
+        taken += [QRectF(x, y, rw, rh) for x, y, rw, rh in self.covered_rects]
+        self._place_labels(p, labels, taken, w, h, s)
+        p.setFont(self._font(max(7.0, br * 0.72), QFont.Bold))
         for x, y, number in badges:
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, 230) if number == 1 else QColor(20, 20, 20, 220))
+            if number == 1:
+                p.setPen(QPen(QColor(0, 0, 0, 120), 1.5))
+                p.setBrush(QColor(255, 255, 255, 235))
+            else:
+                p.setPen(QPen(QColor(255, 225, 140, 170), 1.5))
+                p.setBrush(QColor(20, 20, 22, 225))
             p.drawEllipse(QPointF(x, y), br, br)
             p.setPen(QColor(0, 0, 0) if number == 1 else QColor(255, 225, 140))
             p.drawText(QRectF(x - br, y - br, 2 * br, 2 * br), Qt.AlignCenter, str(number))
         p.setBrush(Qt.NoBrush)
         p.restore()
-        self._draw_ascendancy(p)
+        p.setOpacity(self.opacity)
+        self._draw_ascendancy(p, w, h)
 
-    def _draw_ascendancy(self, p):
+    def _draw_ascendancy(self, p, w, h):
         if self.asc is None or not self.asc_nodes:
             return
         t = self.asc[0]
         s = t.scale
+        labels = []
         for n in self.asc_nodes:
             x, y = t.to_screen(n.x, n.y)
             r = n.radius * s * 1.2
@@ -713,11 +778,12 @@ class Overlay(QWidget):
             if n.id in self.allocated:
                 color.setAlpha(80)
                 p.setPen(QPen(color, max(1.5, 5 * s)))
+                p.drawEllipse(QPointF(x, y), r, r)
             else:
-                p.setPen(QPen(color, max(3.0, 12 * s)))
-            p.drawEllipse(QPointF(x, y), r, r)
+                self._ring(p, x, y, r, color, max(3.0, 12 * s))
             if n.kind == "notable" and n.id not in self.allocated and self.settings["show_labels"]:
-                self._label(p, x + r + 6, y, n.name, QColor(255, 225, 140), 11)
+                labels.append((0, x, y, r, n.name, QColor(255, 225, 140)))
+        self._place_labels(p, labels, [], w, h, 0.3)
 
     def set_ascendancy_panel(self, found):
         self.asc = found
@@ -1372,7 +1438,7 @@ class ControlWindow(QWidget):
         self._write_marks(force=True)
 
     # -- tracking ------------------------------------------------------------
-    def on_located(self, t, rect, progress, cursor):
+    def on_located(self, t, rect, progress, cursor, path=None):
         self.overlay.place(rect)
         opened = t is not None and not self.tree_open
         self.tree_open = t is not None
@@ -1384,7 +1450,7 @@ class ControlWindow(QWidget):
         if self.settings["show_progress"] and (progress is not None or opened):
             self.overlay.set_progress(self._merged_progress())
             self._maybe_next_tree()
-        self.overlay.set_transform(t if self.show_box.isChecked() else None, cursor)
+        self.overlay.set_transform(t if self.show_box.isChecked() else None, cursor, path)
         self.picker.place(rect, t is not None and self.show_box.isChecked())
         self.picker.set_progress(self.overlay.progress_text())
 
