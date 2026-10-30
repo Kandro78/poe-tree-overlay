@@ -26,7 +26,6 @@ import numpy as np
 # two threads are plenty for these image sizes; all cores would make the game share its CPU
 cv2.setNumThreads(2)
 
-_POPCOUNT = np.array([bin(i).count("1") for i in range(256)], np.uint8)
 _KEY = 1 << 24   # packs a 2D grid cell into one int64
 
 
@@ -64,6 +63,7 @@ class Tracker:
     VERIFY_EVERY = 0.3         # s; a full check at least this often while panning
 
     MIN_REF = 10               # without calibration a lock needs this much reference support
+    GUIDED_ENOUGH = 8000       # map points on screen seen at about the current zoom that make a check quick and sure
 
     # Parts of the screen that stay put while the tree pans (fractions of the
     # game window: x0, y0, x1, y1). PoE keeps the HUD visible over the tree, and
@@ -311,6 +311,9 @@ class Tracker:
         h, w = frame.shape[:2]
         f = self.THUMB_HEIGHT / h     # by height: wide screens get a wider thumbnail, not a coarser one
         g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        if h >= 4 * self.THUMB_HEIGHT:
+            # an exact halving first takes OpenCV's fast path: half the time of one big step
+            g = cv2.resize(g, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
         g = cv2.resize(g, (int(w * f), self.THUMB_HEIGHT), interpolation=cv2.INTER_AREA).astype(np.float32)
         th, tw = g.shape
         for x0, y0, x1, y1 in self.mask_rects:
@@ -593,6 +596,13 @@ class Tracker:
         cand = np.nonzero((self.map_pts[:, 0] > x0) & (self.map_pts[:, 0] < x1) &
                           (self.map_pts[:, 1] > y0) & (self.map_pts[:, 1] < y1) &
                           (ratio > 0.4) & (ratio < 2.5))[0]
+        # Zoomed out, 40k+ map points are on screen, seen at several reference
+        # levels; the ones seen at about this zoom are plenty and three times
+        # quicker. Zoomed in past the reference, the wide window is all there is.
+        r = ratio[cand]
+        close = cand[(r > 0.65) & (r < 1.55)]
+        if len(close) >= self.GUIDED_ENOUGH:
+            cand = close
         if len(cand) < self.MIN_INLIERS:
             return None
         cell = radius_px / t.scale
@@ -618,12 +628,21 @@ class Tracker:
         if not qs:
             return None
         q, c = np.concatenate(qs), np.concatenate(cs)
-        near = ((cp[c] - proj[q]) ** 2).sum(1) < cell * cell
+        d = cp[c] - proj[q]
+        near = np.einsum("ij,ij->i", d, d) < cell * cell
         q, c = q[near], c[near]
-        ham = _POPCOUNT[np.bitwise_xor(self.map_desc[cand[c]], desc[q])].sum(1, dtype=np.int32)
-        o = np.lexsort((ham, q))                     # best descriptor per feature
-        q, c, ham = q[o], c[o], ham[o]
-        best = np.r_[True, q[1:] != q[:-1]] & (ham < 50)
+        # the 32-byte descriptors as four 64-bit words: one popcount per word
+        # (zoomed out there are 100k+ pairs, this was half the time)
+        md = self.map_desc.view(np.uint64)
+        dq = np.ascontiguousarray(desc).view(np.uint64)
+        ham = np.bitwise_count(md[cand[c]] ^ dq[q]).sum(1, dtype=np.int32)
+        good = ham < 50                              # drop poor pairs before sorting
+        q, c, ham = q[good], c[good], ham[good]
+        if not len(q):
+            return None
+        o = np.argsort(q * 512 + ham, kind="stable")  # best descriptor per feature first
+        q, c = q[o], c[o]
+        best = np.r_[True, q[1:] != q[:-1]]
         q, c = q[best], c[best]
         src, dst, qidx, is_ref = cp[c], pts[q], q, cand[c] < self.n_ref
         if len(src) < self.MIN_INLIERS:
