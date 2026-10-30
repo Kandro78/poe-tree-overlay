@@ -859,6 +859,7 @@ class ControlWindow(QWidget):
         self.site.characters_ready.connect(self.on_characters)
         self.site.passives_ready.connect(self.on_site_passives)
         self._auto_from = None        # tree index already auto-advanced from
+        self._had_todo = False        # the chosen tree had points left since it was chosen
         self.last_reading = None      # last (allocated, seen, covered) from the screen
         self.tree_open = False
 
@@ -1077,11 +1078,15 @@ class ControlWindow(QWidget):
         return frozenset(merged), everything, covered
 
     def _maybe_next_tree(self):
-        """When the current tree is complete, move on to the build's next one."""
+        """When the current tree gets completed, move on to the build's next one.
+        Only when it had points left after it was chosen: a tree picked by hand
+        that's already done (an earlier leveling stage) stays."""
         st = self.overlay.status
         idx = self.spec_box.currentIndex()
+        if st and st["todo"]:
+            self._had_todo = True
         if (self.settings["auto_next_tree"] and st and not st["todo"] and idx + 1 < len(self.specs)
-                and self._auto_from != idx):
+                and self._had_todo and self._auto_from != idx):
             self._auto_from = idx
             QTimer.singleShot(1500, lambda: self.spec_box.setCurrentIndex(idx + 1)
                               if self.spec_box.currentIndex() == idx else None)
@@ -1221,6 +1226,7 @@ class ControlWindow(QWidget):
         if not 0 <= idx < len(self.specs):
             return
         self.spec = self.specs[idx]
+        self._had_todo = False
         self.settings["spec"] = idx
         save_settings(self.settings)
         self.overlay.set_spec(self.spec)
