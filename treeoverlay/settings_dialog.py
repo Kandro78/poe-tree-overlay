@@ -44,7 +44,7 @@ class SettingsDialog(QDialog):
         shown = theme.Card()
         shown.add(theme.row("Names of upcoming notables and masteries", self.labels))
         shown.add(theme.row("Read which passives are allocated", self.progress))
-        shown.add(theme.row("Number the next", self.route))
+        shown.add(theme.row("Number the next (in Path of Building)", self.route))
         shown.add(theme.row("Switch to the next tree when one is complete", self.auto_next))
 
         self.ui_scale = QDoubleSpinBox()

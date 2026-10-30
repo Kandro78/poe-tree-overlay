@@ -110,6 +110,8 @@ class Tracker:
         self.last_path, self.last_zoom_info, self.last_phase = "", None, None
         self.checked = None
         self.zoom_levels, self.last_scale, self.cursor = [], None, None
+        # (Transform, time) where a wheel turn should take the view; set by the overlay
+        self.wheel_hint = None
         self.user_calibrated = False
         if getattr(self, "ref_pts", None) is not None:
             self.map_pts, self.map_desc = self.ref_pts.copy(), self.ref_desc.copy()
@@ -344,6 +346,7 @@ class Tracker:
         prev, self.prev_thumb = self.prev_thumb, thumb
         shift = None
         zoom_guess = None
+        pts = desc = None
         if prev is not None and prev.shape == thumb.shape and self.transform is not None and self.lost_frames == 0:
             self.last_diff = float(np.abs(thumb - prev).mean())
             if self.last_diff < self.STATIC_DIFF and not self.unverified:
@@ -351,6 +354,16 @@ class Tracker:
                 self.last_path = "still"
                 self.last_verified = time.perf_counter()   # same picture as the checked one
                 return self.transform          # nothing moved: keep the last result
+            hint = self._wheel_hint()
+            if hint is not None:
+                # the wheel said where the view is going: one guided match there
+                # instead of the zoom search (~20 ms instead of 100-400)
+                pts, desc = self._features(frame)
+                found = self._guided(pts, desc, hint, w, h, radius_px=20) if len(pts) >= self.MIN_INLIERS else None
+                if found is not None and found[3] >= 2 * self.CONFIRM_REF and abs(found[0].scale / hint.scale - 1) < 0.03:
+                    self.wheel_hint = None
+                    self.last_path = "wheel"
+                    return self._accept(found, pts, desc, thumb, w, h)
             # Fast results are only taken while a full check happened moments
             # ago, and never for the first still frame after them, which gets
             # the full check instead.
@@ -379,7 +392,8 @@ class Tracker:
                     return self._fast(zoom_guess)
             self.last_phase = (round(float(resp), 2), may_trust)
 
-        pts, desc = self._features(frame)
+        if pts is None:
+            pts, desc = self._features(frame)
         if len(pts) < self.MIN_INLIERS:
             return self._lost()
 
@@ -437,7 +451,22 @@ class Tracker:
                     break
         if found is None or (found[3] < self.MIN_REF and not self.user_calibrated):
             return self._lost()
+        return self._accept(found, pts, desc, thumb, w, h)
 
+    WHEEL_HINT_AGE = 0.6   # s a wheel hint stays worth checking
+
+    def _wheel_hint(self):
+        hint = self.wheel_hint
+        if hint is None:
+            return None
+        t, when = hint
+        if time.perf_counter() - when > self.WHEEL_HINT_AGE or abs(t.scale / self.transform.scale - 1) < 0.02:
+            self.wheel_hint = None     # stale, or the view is already there
+            return None
+        return t
+
+    def _accept(self, found, pts, desc, thumb, w, h):
+        """Take a result checked against the map."""
         t, n_in, inlier_q, n_ref = found
         self._note_zoom(t.scale, h)
         self.transform = t
