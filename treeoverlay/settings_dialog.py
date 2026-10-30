@@ -71,18 +71,25 @@ class SettingsDialog(QDialog):
         program.add(theme.row("Start minimized", self.minimized))
         self.title_patch = theme.Switch()
         self.title_patch.setChecked(settings.get("pob_title_patch", False))
-        program.add(theme.row("Follow tree switches in Path of Building without saving", self.title_patch),
-                    theme.caption("Changes one Path of Building file to show the tree number in its title. "
-                                  "Turning this off restores the original."))
+        self.pob_theme = theme.Switch()
+        self.pob_theme.setChecked(settings.get("pob_theme", False))
+        pob_card = theme.Card()
+        pob_card.add(theme.row("Follow tree switches without saving", self.title_patch),
+                     theme.caption("Shows the tree number in Path of Building's window title."))
+        pob_card.add(theme.row("macOS-style look", self.pob_theme),
+                     theme.caption("Rounded controls, macOS dark colours and the Inter font."))
 
         for i, (name, card) in enumerate((("Overlay", shown), ("Game", game),
-                                          ("Hotkeys (the game still gets the key)", keys), ("Program", program))):
+                                          ("Hotkeys (the game still gets the key)", keys),
+                                          ("Path of Building", pob_card), ("Program", program))):
             if i:
                 lay.addSpacing(8)
             lay.addWidget(theme.section(name))
             lay.addWidget(card)
         lay.addSpacing(6)
-        lay.addWidget(theme.caption("Everything applies right away, nothing needs a restart."))
+        lay.addWidget(theme.caption("Everything applies right away. The Path of Building options change a few of "
+                                    "its files (the originals are kept and put back when switched off) and show "
+                                    "after Path of Building restarts."))
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
@@ -113,6 +120,7 @@ class SettingsDialog(QDialog):
             "start_minimized": self.minimized.isChecked(),
             "appearance": self.appearance.currentData(),
             "pob_title_patch": self.title_patch.isChecked(),
+            "pob_theme": self.pob_theme.isChecked(),
             "keys": {a: (b.currentText() if b.currentText() != "Off" else "") for a, b in self.keys.items()},
         })
         return out

@@ -44,12 +44,15 @@ Data and settings then live in the project folder (`data/`, `settings.json`).
    Building** on, switches to whatever build PoB shows (read from PoB's window
    title). Saving in PoB (Ctrl+S) updates the overlay; if you changed PoB's
    active tree, the overlay follows it. To follow tree switches without
-   saving, turn on **Follow tree switches in Path of Building without saving**
-   in Settings: it adds " [Tree N]" to PoB's window title by changing one line
-   of PoB's `Classes/PassiveSpec.lua` (the original is kept in
-   `data/pob_backup`). PoB's own update check then offers an "update" at each
-   start, which restores the original file until the overlay puts the change
-   back; turning the setting off restores it for good. Or paste a PoB code, pobb.in link or
+   saving, turn on **Follow tree switches without saving** under Path of
+   Building in Settings: it adds " [Tree N]" to PoB's window title by changing
+   one line of PoB's `Classes/PassiveSpec.lua`. **macOS-style look** gives PoB
+   rounded controls, macOS dark greys and the Inter font. Both change PoB's
+   files (the originals are kept in `data/pob_backup` and put back when
+   switched off) and show after PoB restarts. PoB's update check is taught to
+   accept these files, so it no longer offers an "update" for them; a real
+   PoB update still installs, and the overlay re-applies the changes
+   afterwards. Or paste a PoB code, pobb.in link or
    tree URL and press **Load**. Choose the tree in the drop-down (e.g. a
    leveling stage).
 3. Optional: enter your pathofexile.com account (`Name#1234`; taken from PoB
@@ -88,7 +91,13 @@ it. Builds made for a different tree version are flagged in the build info line.
 * **Path of Building** (`pob.py`): reads PoB's `Settings.xml` (builds folder,
   account), its window title (the open build) and the build files (reloaded
   when saved; `<Import lastCharacterHash>` is sha1 of the character name).
-  Nothing in PoB is changed.
+* **PoB changes** (`pob_patch.py`, `pob_theme/`): optional. Exact text swaps in
+  PoB's Lua (undone by swapping back; a PoB version with different code is
+  left alone), the theme module that wraps PoB's drawing calls, and Inter
+  redrawn as PoB's bitmap fonts (`tools/make_pob_theme.py`). PoB's
+  `UpdateCheck.lua` reads `PoETreeOverlay.sha1` (changed file, our hash,
+  release hash) and counts a listed file as the release while the release
+  still has that hash.
 * **Tree data** (`tree.py`, `updater.py`): GGG's
   [skilltree-export](https://github.com/grindinggear/skilltree-export); node
   positions are computed the same way as in Path of Building.

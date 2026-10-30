@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from treeoverlay import build, character, pob, updater  # noqa: E402
+from treeoverlay import build, character, pob, pob_patch, updater  # noqa: E402
 from treeoverlay.progress import Plan, merge_allocations  # noqa: E402
 from treeoverlay.tree import PassiveTree  # noqa: E402
 
@@ -209,23 +209,58 @@ class PathOfBuilding(unittest.TestCase):
                          ("Worb leveling ", 4))
         self.assertEqual(pob.parse_title("CRAB TOTEM (Hierophant) - Path of Building"), ("CRAB TOTEM", None))
 
-    def test_title_patch(self):
+    def _fake_pob(self):
+        """A PoB folder with just the pieces the patches touch, and its manifest."""
         d = Path(tempfile.mkdtemp())
-        (d / "Classes").mkdir()
-        original = ("function PassiveSpecClass:SetWindowTitleWithBuildClass()\n\tlocal classText = 'x'\n"
-                    + pob.PATCH_ORIGINAL + "\nend\n").encode()
-        (d / pob.PATCH_FILE).write_bytes(original)
-        self.assertEqual(pob.patch_state(d), "original")
-        self.assertTrue(pob.apply_patch(d, d / "backup"))
-        self.assertEqual(pob.patch_state(d), "patched")
-        self.assertTrue(pob.apply_patch(d, d / "backup"))            # twice changes nothing
-        self.assertEqual((d / pob.PATCH_FILE).read_text().count("[Tree "), 1)
-        self.assertEqual(next((d / "backup").iterdir()).read_bytes(), original)
-        pob.remove_patch(d)
-        self.assertEqual((d / pob.PATCH_FILE).read_bytes(), original)
-        (d / pob.PATCH_FILE).write_text("-- another PoB version")
-        self.assertEqual(pob.patch_state(d), "unknown")
-        self.assertFalse(pob.apply_patch(d, d / "backup"))
+        files = {
+            "Classes/PassiveSpec.lua": "function X()\n" + pob_patch.TITLE_ORIGINAL + "\nend\n",
+            "Modules/Main.lua": "LoadModule('a')\n" + pob_patch.MAIN_ORIGINAL + "local main = {}\n",
+            "UpdateCheck.lua": "local x\n" + pob_patch.QUIET_LIST_ORIGINAL + "for a in b do\n"
+                               + pob_patch.QUIET_CHECK_ORIGINAL + "\t\t\tend\nend\n",
+            "SimpleGraphic/Fonts/Liberation Sans.16.tga": "PoB's own font",
+        }
+        entries = []
+        for rel, text in files.items():
+            (d / rel).parent.mkdir(parents=True, exist_ok=True)
+            (d / rel).write_bytes(text.encode())
+            entries.append(f'<File part="program" name="{rel.replace(" ", "{space}")}" '
+                           f'sha1="{hashlib.sha1(text.encode()).hexdigest()}"/>')
+        (d / "manifest.xml").write_text("<PoBVersion>" + "".join(entries) + "</PoBVersion>")
+        return d, {rel: text.encode() for rel, text in files.items()}
+
+    def test_pob_patches(self):
+        d, originals = self._fake_pob()
+        backup = d.parent / (d.name + "_backup")
+        self.assertEqual(pob_patch.sync(d, {"title", "theme"}, backup),
+                         {"title": "on", "theme": "on", "quiet": "on"})
+        self.assertIn("[Tree ", (d / "Classes/PassiveSpec.lua").read_text())
+        self.assertTrue((d / "Modules/PoETreeOverlayTheme.lua").is_file())
+        font = d / "SimpleGraphic/Fonts/Liberation Sans.16.tga"
+        self.assertNotEqual(font.read_bytes(), originals["SimpleGraphic/Fonts/Liberation Sans.16.tga"])
+        # the list PoB's update check reads: changed released files, now and as released
+        listed = {line.split("\t")[0]: line.split("\t")[1:] for line in
+                  (d / pob_patch.HASH_LIST).read_text().splitlines()}
+        self.assertEqual(set(listed), set(originals))
+        self.assertEqual(listed["UpdateCheck.lua"], [pob_patch.sha1(d / "UpdateCheck.lua"),
+                                                     hashlib.sha1(originals["UpdateCheck.lua"]).hexdigest()])
+        # twice changes nothing
+        before = {rel: (d / rel).read_bytes() for rel in originals}
+        pob_patch.sync(d, {"title", "theme"}, backup)
+        self.assertEqual(before, {rel: (d / rel).read_bytes() for rel in originals})
+        # only the title: the theme goes, PoB's font is back
+        self.assertEqual(pob_patch.sync(d, {"title"}, backup), {"title": "on", "theme": "off", "quiet": "on"})
+        self.assertEqual(font.read_bytes(), originals["SimpleGraphic/Fonts/Liberation Sans.16.tga"])
+        self.assertFalse((d / "Modules/PoETreeOverlayTheme.lua").exists())
+        # nothing: every file as released, no list
+        pob_patch.sync(d, set(), backup)
+        self.assertEqual({rel: (d / rel).read_bytes() for rel in originals}, originals)
+        self.assertFalse((d / pob_patch.HASH_LIST).exists())
+
+    def test_pob_patch_other_version(self):
+        d, _ = self._fake_pob()
+        (d / "Modules/Main.lua").write_text("-- a PoB version without that line")
+        states = pob_patch.sync(d, {"title", "theme"}, d.parent / (d.name + "_backup"))
+        self.assertEqual(states, {"title": "on", "theme": "unknown", "quiet": "on"})
 
     def _user_dir(self, mode):
         d = Path(tempfile.mkdtemp())

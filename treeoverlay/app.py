@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout
                                QLineEdit, QMenu, QMessageBox, QProgressDialog, QPushButton, QSystemTrayIcon,
                                QVBoxLayout, QWidget)
 
-from . import build, character, pob, theme, updater
+from . import build, character, pob, pob_patch, theme, updater
 from .ascendancy import AscendancyFinder
 from .capture import Capture
 from .cluster import ClusterLayout
@@ -32,7 +32,7 @@ from .tree import CLASS_NAMES, DATA_DIR, PassiveTree
 ROOT = DATA_DIR.parent
 SETTINGS = ROOT / "settings.json"
 DEFAULTS = {"last_input": "", "spec": -1, "mask_rects": None, "ui_scale": 1.0, "fps": 8, "show_progress": True,
-            "start_minimized": False, "appearance": "system", "follow_pob": True, "pob_title_patch": False,
+            "start_minimized": False, "appearance": "system", "follow_pob": True, "pob_title_patch": False, "pob_theme": False,
             "account": "", "character": "", "realm": "pc",
             "show_labels": True, "route_length": 8, "auto_next_tree": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
 
@@ -1007,20 +1007,17 @@ class ControlWindow(QWidget):
         self.picker.show_toast(f"Path of Building: {self.specs[tree - 1].title}")
 
     def keep_pob_patch(self):
-        """Keep the title patch in PoB as the setting says (PoB's own update puts
-        the original file back)."""
+        """Keep PoB's files as the settings say: the tree number in its title,
+        the macOS-style look (a PoB update puts its own files back)."""
         self._patch_check = time.time()
         d = pob.install_dir()
         if d is None:
             return
-        state = pob.patch_state(d)
+        wanted = {f for f, key in (("title", "pob_title_patch"), ("theme", "pob_theme")) if self.settings[key]}
         try:
-            if self.settings["pob_title_patch"] and state == "original":
-                pob.apply_patch(d, DATA_DIR / "pob_backup")
-            elif not self.settings["pob_title_patch"] and state == "patched":
-                pob.remove_patch(d)
+            self.pob_patch_state = pob_patch.sync(d, wanted, DATA_DIR / "pob_backup")
         except OSError as exc:
-            self.pob_status.setText(f"Couldn't change Path of Building's file: {exc}")
+            self.pob_status.setText(f"Couldn't change Path of Building's files: {exc}")
 
     def _pob_caption(self, open_name):
         loaded = self._loaded_file()
@@ -1032,9 +1029,9 @@ class ControlWindow(QWidget):
             if self._pob_tree is not None:
                 text = f"Following “{open_name.strip()}” and its tree. Saving in Path of Building updates the overlay."
             elif self.settings["pob_title_patch"] and pob.install_dir() is not None:
-                state = pob.patch_state(pob.install_dir())
+                state = getattr(self, "pob_patch_state", {}).get("title")
                 text = (f"Following “{open_name.strip()}”. Restart Path of Building to follow tree switches "
-                        "without saving." if state == "patched" else
+                        "without saving." if state == "on" else
                         f"Following “{open_name.strip()}”. This Path of Building version can't show its tree "
                         "in the title; save (Ctrl+S) after switching trees.")
             else:
@@ -1182,7 +1179,8 @@ class ControlWindow(QWidget):
             return
         new = dlg.values()
         ui_changed = new["ui_scale"] != self.settings["ui_scale"]
-        patch_changed = new["pob_title_patch"] != self.settings["pob_title_patch"]
+        patch_changed = (new["pob_title_patch"], new["pob_theme"]) != (self.settings["pob_title_patch"],
+                                                                         self.settings["pob_theme"])
         look_changed = new["appearance"] != self.settings.get("appearance", "system")
         realm_changed = new["realm"] != self.settings["realm"]
         self.settings.update(new)

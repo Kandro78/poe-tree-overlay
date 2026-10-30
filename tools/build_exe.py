@@ -26,6 +26,7 @@ subprocess.run([
     "--name", "PoE Tree Overlay",
     "--icon", str(icon),
     "--add-data", f"{ROOT / 'treeoverlay' / 'cluster_offsets.json'};treeoverlay",
+    "--add-data", f"{ROOT / 'treeoverlay' / 'pob_theme'};treeoverlay/pob_theme",
     "--collect-submodules", "dxcam",
     "--collect-submodules", "comtypes",
     "--distpath", str(ROOT / "dist"),
