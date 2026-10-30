@@ -32,7 +32,7 @@ from .tree import CLASS_NAMES, DATA_DIR, PassiveTree
 ROOT = DATA_DIR.parent
 SETTINGS = ROOT / "settings.json"
 DEFAULTS = {"last_input": "", "spec": -1, "mask_rects": None, "ui_scale": 1.0, "fps": 8, "show_progress": True,
-            "start_minimized": False, "follow_pob": True,
+            "start_minimized": False, "appearance": "system", "follow_pob": True, "pob_title_patch": False,
             "account": "", "character": "", "realm": "pc",
             "show_labels": True, "route_length": 8, "auto_next_tree": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
 
@@ -799,6 +799,8 @@ class ControlWindow(QWidget):
         self.follow_box.setChecked(self.settings["follow_pob"])
         self.pob_status = theme.caption("")
         self._pob_open = None          # build name in PoB's title at the last look
+        self._pob_tree = None          # tree number in PoB's title (with the patch)
+        self._patch_check = 0.0        # when the PoB patch was last looked at
         self._watch = None             # (path, mtime) of the loaded build file
         self._file_active = None       # the file's active tree at the last load
 
@@ -910,6 +912,7 @@ class ControlWindow(QWidget):
                 self.account.setText(self.pob.account)
                 self.settings["realm"] = self.pob.realm
                 QTimer.singleShot(0, self.get_characters)
+            self.keep_pob_patch()
             self.pob_timer = QTimer(self, interval=1000, timeout=self.poll_pob)
             self.pob_timer.start()
             QTimer.singleShot(0, self.poll_pob)
@@ -963,7 +966,9 @@ class ControlWindow(QWidget):
 
     def poll_pob(self):
         """Every second: follow the build PoB shows, reload the file when it's saved."""
-        name = pob.open_build_name() if self.settings["follow_pob"] else None
+        name, tree = pob.open_build() if self.settings["follow_pob"] else (None, None)
+        if time.time() - self._patch_check > 30:
+            self.keep_pob_patch()
         if name is not None and name != self._pob_open:
             builds = pob.list_builds(self.pob.build_dir)
             hit = pob.find_build(name, builds, prefer=self._loaded_file() or self.pob.last_build)
@@ -973,8 +978,10 @@ class ControlWindow(QWidget):
                 self._pob_open = name
                 if hit.path != self._loaded_file():
                     self.load(str(hit.path), mode="pob")
+                    self._pob_tree = None      # take PoB's tree below, not the saved one
         elif name is None:
             self._pob_open = None
+        self._follow_pob_tree(name, tree)
         if self._watch:
             path, mtime = self._watch
             try:
@@ -985,6 +992,36 @@ class ControlWindow(QWidget):
                 self.load(str(path), mode="reload")
         self._pob_caption(name)
 
+    def _follow_pob_tree(self, name, tree):
+        """With the title patch PoB names its active tree: switching trees there
+        switches here, without saving. Only on a change in PoB, so a tree picked
+        here stays until PoB switches again."""
+        if tree == self._pob_tree:
+            return
+        self._pob_tree = tree
+        loaded = self._loaded_file()
+        if (tree is None or loaded is None or loaded.stem != name or not 1 <= tree <= len(self.specs)
+                or self.spec_box.currentIndex() == tree - 1):
+            return
+        self.spec_box.setCurrentIndex(tree - 1)
+        self.picker.show_toast(f"Path of Building: {self.specs[tree - 1].title}")
+
+    def keep_pob_patch(self):
+        """Keep the title patch in PoB as the setting says (PoB's own update puts
+        the original file back)."""
+        self._patch_check = time.time()
+        d = pob.install_dir()
+        if d is None:
+            return
+        state = pob.patch_state(d)
+        try:
+            if self.settings["pob_title_patch"] and state == "original":
+                pob.apply_patch(d, DATA_DIR / "pob_backup")
+            elif not self.settings["pob_title_patch"] and state == "patched":
+                pob.remove_patch(d)
+        except OSError as exc:
+            self.pob_status.setText(f"Couldn't change Path of Building's file: {exc}")
+
     def _pob_caption(self, open_name):
         loaded = self._loaded_file()
         if not self.settings["follow_pob"]:
@@ -992,7 +1029,16 @@ class ControlWindow(QWidget):
         elif open_name is None:
             text = "Path of Building isn't showing a build. Open one there, or pick one above."
         elif loaded is not None and loaded.stem == open_name:
-            text = f"Following “{open_name.strip()}”. Saving in Path of Building (Ctrl+S) updates the overlay."
+            if self._pob_tree is not None:
+                text = f"Following “{open_name.strip()}” and its tree. Saving in Path of Building updates the overlay."
+            elif self.settings["pob_title_patch"] and pob.install_dir() is not None:
+                state = pob.patch_state(pob.install_dir())
+                text = (f"Following “{open_name.strip()}”. Restart Path of Building to follow tree switches "
+                        "without saving." if state == "patched" else
+                        f"Following “{open_name.strip()}”. This Path of Building version can't show its tree "
+                        "in the title; save (Ctrl+S) after switching trees.")
+            else:
+                text = f"Following “{open_name.strip()}”. Saving in Path of Building (Ctrl+S) updates the overlay."
         else:
             return      # the not-saved-yet note stays
         self.pob_status.setText(text)
@@ -1136,6 +1182,8 @@ class ControlWindow(QWidget):
             return
         new = dlg.values()
         ui_changed = new["ui_scale"] != self.settings["ui_scale"]
+        patch_changed = new["pob_title_patch"] != self.settings["pob_title_patch"]
+        look_changed = new["appearance"] != self.settings.get("appearance", "system")
         realm_changed = new["realm"] != self.settings["realm"]
         self.settings.update(new)
         save_settings(self.settings)
@@ -1145,6 +1193,10 @@ class ControlWindow(QWidget):
             self.worker.requests.put("refit")
         if realm_changed:
             self.refresh_site(force=True)
+        if look_changed:
+            theme.set_mode(QApplication.instance(), new["appearance"])
+        if patch_changed:
+            self.keep_pob_patch()
         if self.spec is not None:
             self.overlay.set_spec(self.spec)
         self.overlay.update()
@@ -1391,7 +1443,7 @@ def main():
     app.setQuitOnLastWindowClosed(False)    # it lives on in the tray
     app.setWindowIcon(app_icon())
     app.aboutToQuit.connect(lambda: winmm.timeEndPeriod(1))
-    theme.apply(app)
+    theme.apply(app, load_settings().get("appearance", "system"))
     if not ensure_tree_data(app):
         sys.exit(1)
     w = ControlWindow()

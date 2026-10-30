@@ -43,7 +43,13 @@ Data and settings then live in the project folder (`data/`, `settings.json`).
    lists your PoB builds and, with **Follow the build open in Path of
    Building** on, switches to whatever build PoB shows (read from PoB's window
    title). Saving in PoB (Ctrl+S) updates the overlay; if you changed PoB's
-   active tree, the overlay follows it. Or paste a PoB code, pobb.in link or
+   active tree, the overlay follows it. To follow tree switches without
+   saving, turn on **Follow tree switches in Path of Building without saving**
+   in Settings: it adds " [Tree N]" to PoB's window title by changing one line
+   of PoB's `Classes/PassiveSpec.lua` (the original is kept in
+   `data/pob_backup`). PoB's own update check then offers an "update" at each
+   start, which restores the original file until the overlay puts the change
+   back; turning the setting off restores it for good. Or paste a PoB code, pobb.in link or
    tree URL and press **Load**. Choose the tree in the drop-down (e.g. a
    leveling stage).
 3. Optional: enter your pathofexile.com account (`Name#1234`; taken from PoB

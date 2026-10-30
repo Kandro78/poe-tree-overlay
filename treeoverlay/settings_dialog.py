@@ -62,8 +62,18 @@ class SettingsDialog(QDialog):
 
         self.minimized = theme.Switch()
         self.minimized.setChecked(settings.get("start_minimized", False))
+        self.appearance = QComboBox()
+        for key, label in theme.MODES.items():
+            self.appearance.addItem(label, key)
+        self.appearance.setCurrentIndex(max(0, self.appearance.findData(settings.get("appearance", "system"))))
         program = theme.Card()
+        program.add(theme.row("Appearance", self.appearance))
         program.add(theme.row("Start minimized", self.minimized))
+        self.title_patch = theme.Switch()
+        self.title_patch.setChecked(settings.get("pob_title_patch", False))
+        program.add(theme.row("Follow tree switches in Path of Building without saving", self.title_patch),
+                    theme.caption("Changes one Path of Building file to show the tree number in its title. "
+                                  "Turning this off restores the original."))
 
         for i, (name, card) in enumerate((("Overlay", shown), ("Game", game),
                                           ("Hotkeys (the game still gets the key)", keys), ("Program", program))):
@@ -101,6 +111,8 @@ class SettingsDialog(QDialog):
             "realm": self.realm.currentText(),
             "fps": self.fps.value(),
             "start_minimized": self.minimized.isChecked(),
+            "appearance": self.appearance.currentData(),
+            "pob_title_patch": self.title_patch.isChecked(),
             "keys": {a: (b.currentText() if b.currentText() != "Off" else "") for a, b in self.keys.items()},
         })
         return out

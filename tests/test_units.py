@@ -205,6 +205,27 @@ class PathOfBuilding(unittest.TestCase):
         self.assertEqual(pob.name_from_title("Flicker (2.0) (Raider) - Path of Building"), "Flicker (2.0)")
         self.assertIsNone(pob.name_from_title("Path of Building"))
         self.assertIsNone(pob.name_from_title("pobb.in - Path of Building - Google Chrome"))
+        self.assertEqual(pob.parse_title("Worb leveling  (Elementalist) [Tree 4] - Path of Building"),
+                         ("Worb leveling ", 4))
+        self.assertEqual(pob.parse_title("CRAB TOTEM (Hierophant) - Path of Building"), ("CRAB TOTEM", None))
+
+    def test_title_patch(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "Classes").mkdir()
+        original = ("function PassiveSpecClass:SetWindowTitleWithBuildClass()\n\tlocal classText = 'x'\n"
+                    + pob.PATCH_ORIGINAL + "\nend\n").encode()
+        (d / pob.PATCH_FILE).write_bytes(original)
+        self.assertEqual(pob.patch_state(d), "original")
+        self.assertTrue(pob.apply_patch(d, d / "backup"))
+        self.assertEqual(pob.patch_state(d), "patched")
+        self.assertTrue(pob.apply_patch(d, d / "backup"))            # twice changes nothing
+        self.assertEqual((d / pob.PATCH_FILE).read_text().count("[Tree "), 1)
+        self.assertEqual(next((d / "backup").iterdir()).read_bytes(), original)
+        pob.remove_patch(d)
+        self.assertEqual((d / pob.PATCH_FILE).read_bytes(), original)
+        (d / pob.PATCH_FILE).write_text("-- another PoB version")
+        self.assertEqual(pob.patch_state(d), "unknown")
+        self.assertFalse(pob.apply_patch(d, d / "backup"))
 
     def _user_dir(self, mode):
         d = Path(tempfile.mkdtemp())

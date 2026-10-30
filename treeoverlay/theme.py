@@ -119,24 +119,38 @@ QProgressDialog QLabel {{ padding: 6px; }}
 """
 
 
-def apply(app):
-    """Style the whole app and follow light/dark changes of Windows."""
-    global _dark
-    app.setStyle("Fusion")
-    hints = app.styleHints()
+MODES = {"system": "Like Windows", "light": "Light", "dark": "Dark"}
+_mode = "system"
 
-    def refresh(*_):
-        global _dark
-        _dark = hints.colorScheme() == Qt.ColorScheme.Dark
-        app.setStyleSheet(stylesheet())
-        for w in app.topLevelWidgets():
-            if w.isWindow():
-                title_bar(w)
-            for s in w.findChildren(Switch):
-                s.update()
-    _dark = hints.colorScheme() == Qt.ColorScheme.Dark
-    refresh()
-    hints.colorSchemeChanged.connect(refresh)
+
+def apply(app, mode="system"):
+    """Style the whole app. mode: "light", "dark", or "system" to follow the
+    light/dark setting of Windows as it changes."""
+    global _mode
+    _mode = mode if mode in MODES else "system"
+    app.setStyle("Fusion")
+    app.styleHints().colorSchemeChanged.connect(lambda *_: _refresh(app))
+    _refresh(app)
+
+
+def set_mode(app, mode):
+    global _mode
+    _mode = mode if mode in MODES else "system"
+    _refresh(app)
+
+
+def _refresh(app):
+    global _dark
+    if _mode == "system":
+        _dark = app.styleHints().colorScheme() == Qt.ColorScheme.Dark
+    else:
+        _dark = _mode == "dark"
+    app.setStyleSheet(stylesheet())
+    for w in app.topLevelWidgets():
+        if w.isWindow():
+            title_bar(w)
+        for s in w.findChildren(Switch):
+            s.update()
 
 
 def title_bar(widget):

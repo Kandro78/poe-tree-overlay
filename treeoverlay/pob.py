@@ -7,12 +7,17 @@
 * A saved build file changes on disk: reload it (PoB saves on Ctrl+S).
 * Each build remembers the imported character as sha1(name)
   (<Import lastCharacterHash>), which picks the character on pathofexile.com.
+* Optional patch (the only change ever made to PoB): one line of
+  Classes/PassiveSpec.lua adds " [Tree N]" to the title, so switching trees in
+  PoB shows without saving. PoB's own update check sees the changed file and
+  offers to "update" it, which restores the original.
 """
 import ctypes
 import ctypes.wintypes as wt
 import hashlib
 import os
 import re
+import shutil
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,13 +106,23 @@ def list_builds(build_dir):
     return out
 
 
+def parse_title(title):
+    """'CRAB TOTEM (Hierophant) [Tree 2] - Path of Building' -> ('CRAB TOTEM', 2).
+    (None, None) without a build; the tree number only with the patch."""
+    if not title.endswith(TITLE_SUFFIX):
+        return None, None
+    sub = title[:-len(TITLE_SUFFIX)]
+    tree = None
+    m = re.match(r"^(.*) \[Tree (\d+)\]$", sub)
+    if m:
+        sub, tree = m.group(1), int(m.group(2))
+    m = re.match(r"^(.*) \([^()]*\)$", sub)
+    return (m.group(1) if m else sub), tree
+
+
 def name_from_title(title):
     """'CRAB TOTEM (Hierophant) - Path of Building' -> 'CRAB TOTEM'; None without a build."""
-    if not title.endswith(TITLE_SUFFIX):
-        return None
-    sub = title[:-len(TITLE_SUFFIX)]
-    m = re.match(r"^(.*) \([^()]*\)$", sub)
-    return m.group(1) if m else sub
+    return parse_title(title)[0]
 
 
 def find_build(name, builds, prefer=None):
@@ -123,8 +138,13 @@ def find_build(name, builds, prefer=None):
 
 def open_build_name():
     """Name of the build open in a running PoB, or None."""
+    return open_build()[0]
+
+
+def open_build():
+    """(build name, tree number or None) of a running PoB, or (None, None)."""
     if os.name != "nt":
-        return None
+        return None, None
     user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
     found = []
 
@@ -155,7 +175,7 @@ def open_build_name():
         return True
 
     user32.EnumWindows(visit, 0)
-    return name_from_title(found[0]) if found else None
+    return parse_title(found[0]) if found else (None, None)
 
 
 def character_hash(build_path):
@@ -177,3 +197,58 @@ def character_for(build_path, names):
         if hashlib.sha1(n.encode("utf-8")).hexdigest() == h:
             return n
     return None
+
+
+# -- the window title patch ----------------------------------------------------------
+PATCH_FILE = "Classes/PassiveSpec.lua"
+PATCH_ORIGINAL = '''	main:SetWindowTitleSubtext(string.format("%s (%s)", self.build.buildName, classText))'''
+PATCH_NEW = '''	-- PoE Tree Overlay: the active tree's number in the title, so the overlay can follow it
+	local treeTab, treeText = self.build.treeTab, ""
+	if treeTab and treeTab.specList and treeTab.specList[treeTab.activeSpec] == self then
+		treeText = " [Tree " .. treeTab.activeSpec .. "]"
+	end
+	main:SetWindowTitleSubtext(string.format("%s (%s)%s", self.build.buildName, classText, treeText))
+	-- PoE Tree Overlay end'''
+
+
+def install_dir():
+    """PoB's program folder (where Path of Building.exe is), or None."""
+    d = Path(os.environ.get("APPDATA", "")) / "Path of Building Community"
+    return d if (d / PATCH_FILE).is_file() else None
+
+
+def patch_state(pob_dir):
+    """"patched", "original", or "unknown" (another PoB version changed the line)."""
+    try:
+        text = (Path(pob_dir) / PATCH_FILE).read_text(encoding="utf-8")
+    except OSError:
+        return "unknown"
+    if PATCH_NEW in text:
+        return "patched"
+    return "original" if text.count(PATCH_ORIGINAL) == 1 else "unknown"
+
+
+def apply_patch(pob_dir, backup_dir):
+    """Add the tree number to PoB's title. The untouched file is kept in
+    backup_dir first. Takes effect when PoB is started next."""
+    f = Path(pob_dir) / PATCH_FILE
+    raw = f.read_bytes()
+    text = raw.decode("utf-8")
+    if PATCH_NEW in text:
+        return True
+    if text.count(PATCH_ORIGINAL) != 1:
+        return False
+    Path(backup_dir).mkdir(parents=True, exist_ok=True)
+    backup = Path(backup_dir) / f"PassiveSpec.{hashlib.sha1(raw).hexdigest()[:12]}.lua"
+    if not backup.exists():
+        shutil.copy2(f, backup)
+    f.write_bytes(text.replace(PATCH_ORIGINAL, PATCH_NEW).encode("utf-8"))
+    return True
+
+
+def remove_patch(pob_dir):
+    """Put PoB's line back as it was."""
+    f = Path(pob_dir) / PATCH_FILE
+    text = f.read_bytes().decode("utf-8")
+    if PATCH_NEW in text:
+        f.write_bytes(text.replace(PATCH_NEW, PATCH_ORIGINAL).encode("utf-8"))
