@@ -33,8 +33,13 @@ ROOT = DATA_DIR.parent
 SETTINGS = ROOT / "settings.json"
 DEFAULTS = {"last_input": "", "spec": -1, "mask_rects": None, "ui_scale": 1.0, "fps": 8, "show_progress": True,
             "start_minimized": False, "appearance": "system", "follow_pob": True, "pob_title_patch": False, "pob_theme": False,
+            "pob_speed": False, "pob_link": False, "pob_marks": False, "pob_keys": False,
             "account": "", "character": "", "realm": "pc",
             "show_labels": True, "route_length": 8, "auto_next_tree": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
+
+# PoB change (pob_patch) -> the setting that turns it on
+POB_PATCH_SETTINGS = {"title": "pob_title_patch", "theme": "pob_theme", "speed": "pob_speed",
+                      "link": "pob_link", "marks": "pob_marks", "keys": "pob_keys"}
 
 user32 = ctypes.windll.user32
 VK = {f"F{i}": 0x6F + i for i in range(1, 13)}
@@ -803,6 +808,8 @@ class ControlWindow(QWidget):
         self._patch_check = 0.0        # when the PoB patch was last looked at
         self._watch = None             # (path, mtime) of the loaded build file
         self._file_active = None       # the file's active tree at the last load
+        self._live = None              # pob_live.txt as last loaded (the live link)
+        self._marks = None             # pob_marks.txt as last written
 
         header = QHBoxLayout()
         icon = QLabel()
@@ -969,6 +976,10 @@ class ControlWindow(QWidget):
         name, tree = pob.open_build() if self.settings["follow_pob"] else (None, None)
         if time.time() - self._patch_check > 30:
             self.keep_pob_patch()
+        if self._follow_live(name):
+            self._pob_caption(name)
+            return
+        self._live = None
         if name is not None and name != self._pob_open:
             builds = pob.list_builds(self.pob.build_dir)
             hit = pob.find_build(name, builds, prefer=self._loaded_file() or self.pob.last_build)
@@ -992,6 +1003,59 @@ class ControlWindow(QWidget):
                 self.load(str(path), mode="reload")
         self._pob_caption(name)
 
+    def _follow_live(self, name):
+        """With the live link PoB writes the build it shows, unsaved edits
+        included, whenever it changes: load that. False when there's nothing
+        live for the build in PoB's title."""
+        if not self.settings["pob_link"] or name is None:
+            return False
+        try:
+            header = (pob_patch.LINK_DIR / "pob_live.txt").read_text(encoding="utf-8").split("\n")
+        except OSError:
+            return False
+        if len(header) < 5 or header[1].strip() != name.strip():
+            return False      # another build, or left by a PoB that has closed
+        if header == self._live:
+            return True
+        live = pob_patch.LINK_DIR / "pob_live.xml"
+        path = Path(header[0]) if header[0] else None
+        target = path if path is not None and path.is_file() else live
+        same_build = self._live is not None and self._live[:2] == header[:2]
+        self._live = header
+        self.load(str(target), mode="live" if same_build else "pob", source=str(live))
+        return True
+
+    def _write_marks(self, force=False):
+        """pob_marks.txt for PoB's tree: what's allocated in game and the next
+        points in order (PoB shows them while the same build is open)."""
+        if not self.settings["pob_marks"] or self.spec is None or self.overlay.plan is None:
+            return
+        now = time.time()
+        if not force and now - getattr(self, "_marks_time", 0) < 1:
+            if not getattr(self, "_marks_pending", False):      # write the latest a second later
+                self._marks_pending = True
+                QTimer.singleShot(1000, lambda: self._write_marks(force=True))
+            return
+        self._marks_time = now
+        self._marks_pending = False
+        progress = self._merged_progress()
+        alloc = set(progress[0]) if progress else set()
+        plan = self.overlay.plan
+        route = plan.route(plan.target & alloc, self.settings["route_length"])
+        build_path = self._live[0] if self._live else str(self._loaded_file() or "")
+        text = (f"build\t{build_path}\ntree\t{self.spec_box.currentIndex() + 1}\n"
+                f"alloc\t{' '.join(map(str, sorted(alloc)))}\nroute\t{' '.join(map(str, route))}\n")
+        if text == self._marks:
+            return
+        try:
+            pob_patch.LINK_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = pob_patch.LINK_DIR / "pob_marks.tmp"
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(pob_patch.LINK_DIR / "pob_marks.txt")
+            self._marks = text
+        except OSError:
+            pass
+
     def _follow_pob_tree(self, name, tree):
         """With the title patch PoB names its active tree: switching trees there
         switches here, without saving. Only on a change in PoB, so a tree picked
@@ -1013,7 +1077,7 @@ class ControlWindow(QWidget):
         d = pob.install_dir()
         if d is None:
             return
-        wanted = {f for f, key in (("title", "pob_title_patch"), ("theme", "pob_theme")) if self.settings[key]}
+        wanted = {f for f, key in POB_PATCH_SETTINGS.items() if self.settings[key]}
         try:
             self.pob_patch_state = pob_patch.sync(d, wanted, DATA_DIR / "pob_backup")
         except OSError as exc:
@@ -1025,6 +1089,8 @@ class ControlWindow(QWidget):
             text = "Pick a build above; it reloads whenever you save it in Path of Building."
         elif open_name is None:
             text = "Path of Building isn't showing a build. Open one there, or pick one above."
+        elif self._live is not None:
+            text = f"Following “{open_name.strip()}” live, unsaved changes and tree switches included."
         elif loaded is not None and loaded.stem == open_name:
             if self._pob_tree is not None:
                 text = f"Following “{open_name.strip()}” and its tree. Saving in Path of Building updates the overlay."
@@ -1142,6 +1208,7 @@ class ControlWindow(QWidget):
             self.picker.set_progress(self.overlay.progress_text())
             self.overlay.update()
             self._maybe_next_tree()
+        self._write_marks()
 
     # -- tray and settings ----------------------------------------------------------
     def _make_tray(self):
@@ -1179,8 +1246,7 @@ class ControlWindow(QWidget):
             return
         new = dlg.values()
         ui_changed = new["ui_scale"] != self.settings["ui_scale"]
-        patch_changed = (new["pob_title_patch"], new["pob_theme"]) != (self.settings["pob_title_patch"],
-                                                                         self.settings["pob_theme"])
+        patch_changed = any(new[k] != self.settings[k] for k in POB_PATCH_SETTINGS.values())
         look_changed = new["appearance"] != self.settings.get("appearance", "system")
         realm_changed = new["realm"] != self.settings["realm"]
         self.settings.update(new)
@@ -1195,6 +1261,8 @@ class ControlWindow(QWidget):
             theme.set_mode(QApplication.instance(), new["appearance"])
         if patch_changed:
             self.keep_pob_patch()
+            self._marks = None
+            self._write_marks()
         if self.spec is not None:
             self.overlay.set_spec(self.spec)
         self.overlay.update()
@@ -1226,12 +1294,14 @@ class ControlWindow(QWidget):
         if path:
             self.load(path)
 
-    def load(self, text, mode="user"):
+    def load(self, text, mode="user", source=None):
         """mode: "user" (typed or picked), "startup" (the last build, on the tree
-        used last), "pob" (followed from Path of Building, on its active tree) or
-        "reload" (the file was saved: same tree, unless PoB's active one changed)."""
+        used last), "pob" (followed from Path of Building, on its active tree),
+        "reload" (the file was saved: same tree, unless PoB's active one changed)
+        or "live" (like reload, from PoB's live link). `source` is read instead
+        of `text` (the live copy of the build file `text`)."""
         try:
-            specs, active = build.load(text)
+            specs, active = build.load(source or text)
         except Exception as exc:
             if mode == "user":
                 QMessageBox.warning(self, "Could not load build", str(exc))
@@ -1239,7 +1309,7 @@ class ControlWindow(QWidget):
         text = text.strip().strip('"')
         path = Path(text)
         is_file = len(text) < 260 and path.is_file()
-        if mode == "reload":
+        if mode in ("reload", "live"):
             idx = active if active != self._file_active else self.spec_box.currentIndex()
         elif mode == "startup" and 0 <= self.settings.get("spec", -1) < len(specs):
             idx = self.settings["spec"]
@@ -1256,13 +1326,14 @@ class ControlWindow(QWidget):
             self.input.clear()
         else:
             self.input.setText(text)
+        same_tree = mode == "live" and idx == self.spec_box.currentIndex()
         self.spec_box.blockSignals(True)
         self.spec_box.clear()
         for s in specs:
             self.spec_box.addItem(f"{s.title}  ({len(s.nodes)} nodes)")
         self.spec_box.setCurrentIndex(idx)
         self.spec_box.blockSignals(False)
-        self.choose_spec(idx)
+        self.choose_spec(idx, toast=not same_tree)
         if self.pob is not None:
             self._show_loaded_build()
         if is_file:
@@ -1272,7 +1343,7 @@ class ControlWindow(QWidget):
                 self.picker.show_toast(f"Path of Building: {path.stem.strip()}")
             self._match_character()
 
-    def choose_spec(self, idx):
+    def choose_spec(self, idx, toast=True):
         if not 0 <= idx < len(self.specs):
             return
         self.spec = self.specs[idx]
@@ -1282,7 +1353,8 @@ class ControlWindow(QWidget):
         self.overlay.set_spec(self.spec)
         self.picker.set_specs(self.specs, idx)
         self.worker.requests.put(("ascendancy", self.tree.ascendancy_name(self.spec.class_id, self.spec.ascend_id)))
-        self.picker.show_toast(f"Switched to tree {idx + 1}/{len(self.specs)}")
+        if toast:
+            self.picker.show_toast(f"Switched to tree {idx + 1}/{len(self.specs)}")
         known = [n for n in self.spec.nodes if n in self.tree.nodes]
         kinds = [self.tree.nodes[n].kind for n in known if not self.tree.nodes[n].ascendancy]
         skipped = len(self.spec.nodes) - len(known)
@@ -1293,6 +1365,10 @@ class ControlWindow(QWidget):
             + (f" · tree {self.spec.tree_version}" if self.spec.tree_version else "")
             + ("" if updater.matches(self.spec.tree_version, updater.installed_version()) else
                f" · <b>this build is for tree {self.spec.tree_version}, the overlay has {updater.installed_version()}</b>"))
+        # what's allocated still holds for the new tree
+        if getattr(self, "last_reading", None) is not None or getattr(self, "site_alloc", None) is not None:
+            self._update_progress()
+        self._write_marks(force=True)
 
     # -- tracking ------------------------------------------------------------
     def on_located(self, t, rect, progress, cursor):
@@ -1303,6 +1379,7 @@ class ControlWindow(QWidget):
             self.refresh_site()
         if progress is not None:
             self.last_reading = progress
+            self._write_marks()
         if self.settings["show_progress"] and (progress is not None or opened):
             self.overlay.set_progress(self._merged_progress())
             self._maybe_next_tree()

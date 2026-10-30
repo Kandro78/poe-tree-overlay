@@ -6,6 +6,18 @@ from . import theme
 KEYS = [f"F{i}" for i in range(1, 13)]
 ACTIONS = [("next_tree", "Next tree of the build"), ("calibrate", "Calibrate"),
            ("toggle", "Show / hide the overlay"), ("reset", "Reset tracking and readings")]
+POB_OPTIONS = [
+    ("pob_link", "Live link", "The overlay follows the build and tree open in Path of Building, unsaved "
+                              "changes included."),
+    ("pob_title_patch", "Tree number in the title", "Shows the tree number in Path of Building's window "
+                                                    "title (follows tree switches without the live link)."),
+    ("pob_marks", "Show in-game progress", "Rings on Path of Building's tree for passives allocated in game "
+                                           "(red: not in the tree) and the next points numbered in order."),
+    ("pob_keys", "Tree hotkeys", "Ctrl+Up and Ctrl+Down switch the build's tree on any tab."),
+    ("pob_speed", "Lower CPU use when idle", "Path of Building draws 20 frames a second instead of over 100 "
+                                             "while you're not using it."),
+    ("pob_theme", "macOS-style look", "Rounded controls, macOS dark colours and the Inter font."),
+]
 
 
 class SettingsDialog(QDialog):
@@ -69,23 +81,29 @@ class SettingsDialog(QDialog):
         program = theme.Card()
         program.add(theme.row("Appearance", self.appearance))
         program.add(theme.row("Start minimized", self.minimized))
-        self.title_patch = theme.Switch()
-        self.title_patch.setChecked(settings.get("pob_title_patch", False))
-        self.pob_theme = theme.Switch()
-        self.pob_theme.setChecked(settings.get("pob_theme", False))
+        self.pob = {}
         pob_card = theme.Card()
-        pob_card.add(theme.row("Follow tree switches without saving", self.title_patch),
-                     theme.caption("Shows the tree number in Path of Building's window title."))
-        pob_card.add(theme.row("macOS-style look", self.pob_theme),
-                     theme.caption("Rounded controls, macOS dark colours and the Inter font."))
+        for key, label, note in POB_OPTIONS:
+            box = theme.Switch()
+            box.setChecked(settings.get(key, False))
+            self.pob[key] = box
+            pob_card.add(theme.row(label, box), theme.caption(note))
 
-        for i, (name, card) in enumerate((("Overlay", shown), ("Game", game),
-                                          ("Hotkeys (the game still gets the key)", keys),
-                                          ("Path of Building", pob_card), ("Program", program))):
-            if i:
-                lay.addSpacing(8)
-            lay.addWidget(theme.section(name))
-            lay.addWidget(card)
+        # two columns: the overlay itself, and Path of Building plus the program
+        columns = QHBoxLayout()
+        columns.setSpacing(20)
+        for sections in ((("Overlay", shown), ("Game", game), ("Hotkeys (the game still gets the key)", keys)),
+                         (("Path of Building", pob_card), ("Program", program))):
+            col = QVBoxLayout()
+            col.setSpacing(6)
+            for i, (name, card) in enumerate(sections):
+                if i:
+                    col.addSpacing(8)
+                col.addWidget(theme.section(name))
+                col.addWidget(card)
+            col.addStretch(1)
+            columns.addLayout(col, 1)
+        lay.addLayout(columns)
         lay.addSpacing(6)
         lay.addWidget(theme.caption("Everything applies right away. The Path of Building options change a few of "
                                     "its files (the originals are kept and put back when switched off) and show "
@@ -103,7 +121,7 @@ class SettingsDialog(QDialog):
         buttons.addWidget(ok)
         lay.addSpacing(8)
         lay.addLayout(buttons)
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(960)
         theme.title_bar(self)
 
     def values(self):
@@ -119,8 +137,7 @@ class SettingsDialog(QDialog):
             "fps": self.fps.value(),
             "start_minimized": self.minimized.isChecked(),
             "appearance": self.appearance.currentData(),
-            "pob_title_patch": self.title_patch.isChecked(),
-            "pob_theme": self.pob_theme.isChecked(),
+            **{key: box.isChecked() for key, box in self.pob.items()},
             "keys": {a: (b.currentText() if b.currentText() != "Off" else "") for a, b in self.keys.items()},
         })
         return out

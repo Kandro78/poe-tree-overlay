@@ -173,10 +173,59 @@ function SetViewport(...)
 	return realSetViewport(...)
 end
 
+-- The passive tree is thousands of images a frame and has no boxes to round:
+-- it is drawn with PoB's own functions, which saves the wrappers' cost. Its
+-- tooltips get the look again.
+local themed = { SetDrawColor = SetDrawColor, DrawImage = DrawImage, DrawImageQuad = DrawImageQuad,
+	DrawImageRotated = DrawImageRotated, DrawString = DrawString, SetDrawLayer = SetDrawLayer, SetViewport = SetViewport }
+local plain = { SetDrawColor = realSetDrawColor, DrawImage = realDrawImage, DrawImageQuad = realDrawImageQuad,
+	DrawImageRotated = realDrawImageRotated, DrawString = realDrawString, SetDrawLayer = realSetDrawLayer,
+	SetViewport = realSetViewport }
+
+local function use(set)
+	for name, func in pairs(set) do
+		_G[name] = func
+	end
+end
+
+local function drawWith(set, other, func, ...)
+	flush()
+	isGrey = false
+	use(set)
+	local result = { pcall(func, ...) }
+	flush()
+	use(other)
+	if not result[1] then
+		error(result[2], 0)
+	end
+	return unpack(result, 2)
+end
+
+local function wrapClasses()
+	local classes = common and common.classes
+	local view, tip = classes and classes.PassiveTreeView, classes and classes.Tooltip
+	if not view or not tip then
+		return false
+	end
+	local viewDraw, tipDraw = view.Draw, tip.Draw
+	view.Draw = function(...)
+		return drawWith(plain, themed, viewDraw, ...)
+	end
+	tip.Draw = function(...)
+		if DrawImage == realDrawImage then
+			return drawWith(themed, plain, tipDraw, ...)
+		end
+		return tipDraw(...)
+	end
+	return true
+end
+
 -- a border still waiting at the end of the frame
 if launch and launch.OnFrame then
 	local onFrame = launch.OnFrame
+	local wrapped = false
 	launch.OnFrame = function(...)
+		wrapped = wrapped or wrapClasses()
 		onFrame(...)
 		flush()
 	end

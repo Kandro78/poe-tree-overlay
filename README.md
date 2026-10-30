@@ -43,14 +43,27 @@ Data and settings then live in the project folder (`data/`, `settings.json`).
    lists your PoB builds and, with **Follow the build open in Path of
    Building** on, switches to whatever build PoB shows (read from PoB's window
    title). Saving in PoB (Ctrl+S) updates the overlay; if you changed PoB's
-   active tree, the overlay follows it. To follow tree switches without
-   saving, turn on **Follow tree switches without saving** under Path of
-   Building in Settings: it adds " [Tree N]" to PoB's window title by changing
-   one line of PoB's `Classes/PassiveSpec.lua`. **macOS-style look** gives PoB
-   rounded controls, macOS dark greys and the Inter font. Both change PoB's
-   files (the originals are kept in `data/pob_backup` and put back when
-   switched off) and show after PoB restarts. PoB's update check is taught to
-   accept these files, so it no longer offers an "update" for them; a real
+   active tree, the overlay follows it. Settings → Path of Building adds more,
+   by changing PoB's files:
+
+   * **Live link**: PoB tells the overlay the build and tree it shows,
+     unsaved edits included, so nothing needs saving.
+   * **Tree number in the title**: " [Tree N]" in PoB's window title (follows
+     tree switches without the live link).
+   * **Show in-game progress**: rings on PoB's tree for passives allocated in
+     game (green, red if the tree doesn't have them) and the next points
+     numbered in the overlay's order.
+   * **Tree hotkeys**: Ctrl+Up / Ctrl+Down switch trees on any tab (Up / Down
+     already do on the Tree tab).
+   * **Lower CPU use when idle**: PoB draws 20 frames a second instead of over
+     100 while it's in front but unused (in the background it already slows
+     down by itself).
+   * **macOS-style look**: rounded controls, macOS dark greys and the Inter
+     font.
+
+   The originals are kept in `data/pob_backup` and put back when an option is
+   switched off; changes show after PoB restarts. PoB's update check is taught
+   to accept these files, so it no longer offers an "update" for them; a real
    PoB update still installs, and the overlay re-applies the changes
    afterwards. Or paste a PoB code, pobb.in link or
    tree URL and press **Load**. Choose the tree in the drop-down (e.g. a
@@ -91,10 +104,18 @@ it. Builds made for a different tree version are flagged in the build info line.
 * **Path of Building** (`pob.py`): reads PoB's `Settings.xml` (builds folder,
   account), its window title (the open build) and the build files (reloaded
   when saved; `<Import lastCharacterHash>` is sha1 of the character name).
-* **PoB changes** (`pob_patch.py`, `pob_theme/`): optional. Exact text swaps in
-  PoB's Lua (undone by swapping back; a PoB version with different code is
-  left alone), the theme module that wraps PoB's drawing calls, and Inter
-  redrawn as PoB's bitmap fonts (`tools/make_pob_theme.py`). PoB's
+* **PoB changes** (`pob_patch.py`, `pob_theme/`, `pob_extras/`): optional.
+  Exact text swaps in PoB's Lua (undone by swapping back; a PoB version with
+  different code is left alone), the theme module that wraps PoB's drawing
+  calls (the passive tree is drawn without it, which keeps it free), Inter
+  redrawn as PoB's bitmap fonts (`tools/make_pob_theme.py`), and
+  `PoETreeOverlay.lua` for the rest. That one reads `pob_extras.cfg` and
+  swaps files with the overlay in `%APPDATA%\PoE Tree Overlay`: it writes
+  `pob_live.xml` (PoB's own `SaveDB` output) and `pob_live.txt` (file, build
+  name, active tree, revision) a quarter second after each change, and reads
+  `pob_marks.txt` (build, tree, allocated node ids, route) every second. The
+  frame limiter sleeps through LuaJIT's FFI. `debug=1` in the cfg logs to
+  `pob_extras.log`. PoB's
   `UpdateCheck.lua` reads `PoETreeOverlay.sha1` (changed file, our hash,
   release hash) and counts a listed file as the release while the release
   still has that hash.
