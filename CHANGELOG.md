@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.1 (2026-10-31)
+
+* Clear Learned Map (F9) now also relearns the tree screen's header, so the
+  overlay no longer stays hidden for good after a game language or UI change.
+* Update Tree Data and pobb.in / pastebin links load in the background
+  instead of freezing the app and the overlay.
+* No false "this build is for another tree" warning when GGG's tree export
+  has a commit that isn't named by version.
+* A damaged data file shows an error and is rebuilt on the next start; an
+  interrupted first download is fetched again.
+* Unexpected answers from pathofexile.com show an error instead of hanging.
+* Errors the overlay recovers from are now written to `log.txt` too.
+* Settings are saved safely (a crash mid-save can't wipe them).
+
 ## 0.9.0 (2026-10-30) — first public release
 
 * Build overlay on the in-game passive tree: rings, connections, refund marks,
