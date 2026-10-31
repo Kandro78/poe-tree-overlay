@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.2 (2026-10-31)
+
+* The download window (Update Tree Data, pobb.in / pastebin links) no longer
+  takes the focus from the game.
+* A build Path of Building has open is no longer replaced by a pobb.in /
+  pastebin link that was still downloading at startup.
+* A second Update Tree Data click during a download is ignored instead of
+  starting another download.
+* After a damaged data file, restarting the overlay downloads the tree data
+  again (Update Tree Data couldn't repair it).
+
 ## 0.9.1 (2026-10-31)
 
 * Clear Learned Map (F9) now also relearns the tree screen's header, so the

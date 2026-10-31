@@ -173,11 +173,12 @@ class Worker(QThread):
         try:
             self._load_reference()
         except Exception as exc:
-            # a bad or half-written file: rebuilt on the next start
+            # a bad or missing file: the next start downloads the tree again and rebuilds the rest
             traceback.print_exc()
             for name in updater.DERIVED:
                 (DATA_DIR / name).unlink(missing_ok=True)
-            self.status.emit(f"Error: {exc} (restart the overlay; if it stays, use Update Tree Data)")
+            updater.VERSION_FILE.unlink(missing_ok=True)
+            self.status.emit(f"Error: {exc} (restart the overlay to download the tree data again)")
             return
         sct = Capture()
         self.status.emit(f"Ready (capture: {sct.backend})")
@@ -1539,12 +1540,18 @@ class ControlWindow(QWidget):
         self.overlay.update()
 
     def update_tree_data(self):
+        if getattr(self, "_updating", False):
+            return     # a second click while downloading: two downloads would write the same files
         lines = []
 
         def job(log):
             return updater.update(log=lambda line: (lines.append(line), log(line)))
 
-        new, error = in_background("Looking for a newer passive tree…", job)
+        self._updating = True
+        try:
+            new, error = in_background("Looking for a newer passive tree…", job)
+        finally:
+            self._updating = False
         if error:
             QMessageBox.warning(self, "Update failed", error)
             return
@@ -1563,8 +1570,11 @@ class ControlWindow(QWidget):
         "reload" (the file was saved: same tree, unless PoB's active one changed)
         or "live" (like reload, from PoB's live link). `source` is read instead
         of `text` (the live copy of the build file `text`)."""
+        before = getattr(self, "_loads", 0)      # builds applied so far
         if build.needs_fetch(source or text):
             loaded, error = in_background("Fetching the build…", lambda _: build.load(source or text))
+            if getattr(self, "_loads", 0) != before:
+                return    # another build was loaded during the download (PoB's, say): that one stays
         else:
             try:
                 loaded, error = build.load(source or text), None
@@ -1574,6 +1584,7 @@ class ControlWindow(QWidget):
             if mode == "user":
                 QMessageBox.warning(self, "Could not load build", error)
             return    # a reload may have caught PoB mid-save: the next look tries again
+        self._loads = before + 1
         specs, active = loaded
         text = text.strip().strip('"')
         path = Path(text)
@@ -1753,6 +1764,7 @@ def in_background(text, job):
     dlg = QProgressDialog(text, None, 0, 0)
     dlg.setWindowTitle("PoE Tree Overlay")
     dlg.setWindowIcon(app_icon())
+    dlg.setAttribute(Qt.WA_ShowWithoutActivating)    # never take the focus from the game
     dlg.show()
     out = {}
 
