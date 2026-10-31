@@ -85,7 +85,9 @@ def load_settings():
 
 
 def save_settings(s):
-    SETTINGS.write_text(json.dumps(s, indent=2), encoding="utf-8")
+    tmp = SETTINGS.with_suffix(".tmp")      # a crash mid-write must not leave half a file
+    tmp.write_text(json.dumps(s, indent=2), encoding="utf-8")
+    tmp.replace(SETTINGS)
 
 
 def find_game():
@@ -168,17 +170,15 @@ class Worker(QThread):
         self._stop = True
 
     def run(self):
-        render = DATA_DIR / "render_0.2972.png"
-        if not render.exists():
-            self.status.emit("Rendering the reference tree (first start only)…")
-            from . import render as render_tree
-            img, meta = render_tree.render(PassiveTree())
-            import cv2
-            cv2.imwrite(str(render), img)
-            (DATA_DIR / "render_0.2972.json").write_text(json.dumps(meta))
-        self.status.emit("Building the reference map (first start only)…")
-        meta = json.loads((DATA_DIR / "render_0.2972.json").read_text())
-        self.tracker.load_reference(render, meta, cache=DATA_DIR / "refmap.npz")
+        try:
+            self._load_reference()
+        except Exception as exc:
+            # a bad or half-written file: rebuilt on the next start
+            traceback.print_exc()
+            for name in updater.DERIVED:
+                (DATA_DIR / name).unlink(missing_ok=True)
+            self.status.emit(f"Error: {exc} (restart the overlay; if it stays, use Update Tree Data)")
+            return
         sct = Capture()
         self.status.emit(f"Ready (capture: {sct.backend})")
         try:
@@ -191,6 +191,19 @@ class Worker(QThread):
                     time.sleep(1.0)
         finally:
             sct.close()
+
+    def _load_reference(self):
+        render = DATA_DIR / "render_0.2972.png"
+        if not render.exists():
+            self.status.emit("Rendering the reference tree (first start only)…")
+            from . import render as render_tree
+            img, meta = render_tree.render(PassiveTree())
+            import cv2
+            cv2.imwrite(str(render), img)
+            (DATA_DIR / "render_0.2972.json").write_text(json.dumps(meta))
+        self.status.emit("Building the reference map (first start only)…")
+        meta = json.loads((DATA_DIR / "render_0.2972.json").read_text())
+        self.tracker.load_reference(render, meta, cache=DATA_DIR / "refmap.npz")
 
     def _dump(self, frame, t):
         """TREEOVERLAY_DUMP_DIR: every 2 s keep a frame plus what the tracker made
@@ -237,6 +250,7 @@ class Worker(QThread):
             req = None
         if req == "reset":
             self.tracker.reset()
+            self.tracker.forget_gate()
             self.reader.reset()
             self.status.emit("Learned map and allocations cleared")
         elif req == "reset_alloc":
@@ -318,6 +332,9 @@ class Worker(QThread):
         self.wake.clear()
 
 
+UNEXPECTED = "pathofexile.com sent something unexpected."
+
+
 class SiteFetcher(QObject):
     """Fetches from pathofexile.com off the UI thread."""
     characters_ready = Signal(object, object)   # list or None, error text
@@ -329,6 +346,9 @@ class SiteFetcher(QObject):
                 self.characters_ready.emit(character.characters(account, realm), None)
             except character.SiteError as exc:
                 self.characters_ready.emit(None, str(exc))
+            except Exception:     # an answer in a shape we don't know
+                traceback.print_exc()
+                self.characters_ready.emit(None, UNEXPECTED)
         threading.Thread(target=run, daemon=True).start()
 
     def fetch_passives(self, account, name, realm):
@@ -337,6 +357,9 @@ class SiteFetcher(QObject):
                 self.passives_ready.emit(name, character.passives(account, name, realm), None)
             except character.SiteError as exc:
                 self.passives_ready.emit(name, None, str(exc))
+            except Exception:
+                traceback.print_exc()
+                self.passives_ready.emit(name, None, UNEXPECTED)
         threading.Thread(target=run, daemon=True).start()
 
 
@@ -729,7 +752,8 @@ class Overlay(QWidget):
         30-60 ms, far too slow to follow a drag. Returns (x, y, image): the
         image goes at (t.tx + x, t.ty + y)."""
         st = self.status
-        key = (t.scale, id(self.plan)) + ((frozenset(st["done"]), frozenset(st["next"]), frozenset(st["wrong"]))
+        # each map check refits the scale a hair differently: that's no new zoom
+        key = (round(t.scale, 4), id(self.plan)) + ((frozenset(st["done"]), frozenset(st["next"]), frozenset(st["wrong"]))
                                           if st else ())
         s = t.scale
         bx0, by0, bx1, by1 = self.plan_box
@@ -1516,10 +1540,13 @@ class ControlWindow(QWidget):
 
     def update_tree_data(self):
         lines = []
-        try:
-            new = updater.update(log=lines.append)
-        except Exception as exc:
-            QMessageBox.warning(self, "Update failed", str(exc))
+
+        def job(log):
+            return updater.update(log=lambda line: (lines.append(line), log(line)))
+
+        new, error = in_background("Looking for a newer passive tree…", job)
+        if error:
+            QMessageBox.warning(self, "Update failed", error)
             return
         QMessageBox.information(self, "Tree data", "\n".join(lines[-3:]) if new else lines[-1])
 
@@ -1536,12 +1563,18 @@ class ControlWindow(QWidget):
         "reload" (the file was saved: same tree, unless PoB's active one changed)
         or "live" (like reload, from PoB's live link). `source` is read instead
         of `text` (the live copy of the build file `text`)."""
-        try:
-            specs, active = build.load(source or text)
-        except Exception as exc:
+        if build.needs_fetch(source or text):
+            loaded, error = in_background("Fetching the build…", lambda _: build.load(source or text))
+        else:
+            try:
+                loaded, error = build.load(source or text), None
+            except Exception as exc:
+                loaded, error = None, str(exc)
+        if error:
             if mode == "user":
-                QMessageBox.warning(self, "Could not load build", str(exc))
+                QMessageBox.warning(self, "Could not load build", error)
             return    # a reload may have caught PoB mid-save: the next look tries again
+        specs, active = loaded
         text = text.strip().strip('"')
         path = Path(text)
         is_file = len(text) < 260 and path.is_file()
@@ -1714,33 +1747,42 @@ class ControlWindow(QWidget):
         super().closeEvent(e)
 
 
-def ensure_tree_data(app):
-    """A fresh install has no tree data: fetch it once, with a progress window."""
-    if (DATA_DIR / "data.json").exists():
-        return True
-    (DATA_DIR / "sprites").mkdir(parents=True, exist_ok=True)
-    dlg = QProgressDialog("Downloading the passive tree from GGG (first start only)…", None, 0, 0)
+def in_background(text, job):
+    """Run job(log) on a thread behind a progress window, keeping the app and the
+    overlay drawing meanwhile (downloads can take a while). Returns (result, error)."""
+    dlg = QProgressDialog(text, None, 0, 0)
     dlg.setWindowTitle("PoE Tree Overlay")
     dlg.setWindowIcon(app_icon())
     dlg.show()
-    result = {}
+    out = {}
 
     def run():
         try:
-            updater.update(log=lambda line: result.__setitem__("line", line))
+            out["result"] = job(lambda line: out.__setitem__("line", line))
         except Exception as exc:          # no network, GitHub down, ...
-            result["error"] = str(exc)
-        result["done"] = True
+            out["error"] = str(exc)
+        out["done"] = True
 
     threading.Thread(target=run, daemon=True).start()
-    while "done" not in result:
-        if "line" in result:
-            dlg.setLabelText(result["line"])
-        app.processEvents()
+    while "done" not in out:
+        if "line" in out:
+            dlg.setLabelText(out["line"])
+        QApplication.processEvents()
         time.sleep(0.03)
     dlg.close()
-    if "error" in result:
-        QMessageBox.critical(None, "PoE Tree Overlay", f"Couldn't download the passive tree data:\n{result['error']}")
+    return out.get("result"), out.get("error")
+
+
+def ensure_tree_data():
+    """A fresh install has no tree data: fetch it once. version.txt is written
+    last, so a download cut short is done again."""
+    if updater.VERSION_FILE.exists() and (DATA_DIR / "data.json").exists():
+        return True
+    (DATA_DIR / "sprites").mkdir(parents=True, exist_ok=True)
+    _, error = in_background("Downloading the passive tree from GGG (first start only)…",
+                             lambda log: updater.update(log=log))
+    if error:
+        QMessageBox.critical(None, "PoE Tree Overlay", f"Couldn't download the passive tree data:\n{error}")
         return False
     return True
 
@@ -1762,6 +1804,8 @@ def start_log():
     fh.write(f"PoE Tree Overlay {__version__} · {time.strftime('%Y-%m-%d %H:%M:%S')} · "
              f"Windows {win.major}.{win.minor} build {win.build} · Python {sys.version.split()[0]}\n")
     faulthandler.enable(file=fh)
+    if sys.stderr is None:      # the windowed exe has none: caught errors (traceback.print_exc) go to the log
+        sys.stderr = fh
 
     def unhandled(exc_type, exc, tb):
         fh.write(f"\n{time.strftime('%H:%M:%S')} unhandled exception:\n")
@@ -1788,7 +1832,7 @@ def main():
     app.setWindowIcon(app_icon())
     app.aboutToQuit.connect(lambda: winmm.timeEndPeriod(1))
     theme.apply(app, load_settings().get("appearance", "system"))
-    if not ensure_tree_data(app):
+    if not ensure_tree_data():
         sys.exit(1)
     w = ControlWindow()
     w.destroyed.connect(app.quit)

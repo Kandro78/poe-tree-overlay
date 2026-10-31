@@ -117,11 +117,6 @@ def parse_title(title):
     return (m.group(1) if m else sub), tree
 
 
-def name_from_title(title):
-    """'CRAB TOTEM (Hierophant) - Path of Building' -> 'CRAB TOTEM'; None without a build."""
-    return parse_title(title)[0]
-
-
 def find_build(name, builds, prefer=None):
     """The file of the build PoB has open: same name; if several folders have
     one, the one PoB opened last, else the newest."""
@@ -131,11 +126,6 @@ def find_build(name, builds, prefer=None):
             if os.path.normcase(str(b.path)) == os.path.normcase(str(prefer)):
                 return b
     return hits[0] if hits else None
-
-
-def open_build_name():
-    """Name of the build open in a running PoB, or None."""
-    return open_build()[0]
 
 
 def open_build():

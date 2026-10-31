@@ -192,7 +192,10 @@ window count as the game.
 
 Everything runs and stays on your PC. The only network calls are:
 
-* GGG's passive tree export (first start, and **Update tree data**).
+* GGG's passive tree export, downloaded from GitHub (first start, and
+  **Update tree data**).
+* pobb.in or pastebin.com, when you paste a link from there (fetched again
+  when the overlay starts with that link as the last build).
 * pathofexile.com, to list your characters and read their allocated passives -
   only when an account name is set. With Path of Building installed, the
   account PoB imports from is filled in for you; clear the field and the

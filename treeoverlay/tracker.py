@@ -306,6 +306,12 @@ class Tracker:
         img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE) if self.gate_path.exists() else None
         self.gate, self.gate_candidate, self.gate_off = img, None, False
 
+    def forget_gate(self):
+        """Learn the header again: a game language or UI change makes the kept one never match."""
+        if self.gate_path:
+            self.gate_path.unlink(missing_ok=True)
+        self.gate, self.gate_candidate, self.gate_off = None, None, False
+
     def _thumb(self, frame):
         """Small grey copy with the HUD flattened, for cheap frame-to-frame checks."""
         h, w = frame.shape[:2]

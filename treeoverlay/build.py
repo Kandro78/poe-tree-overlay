@@ -126,6 +126,11 @@ def _fetch(url):
         return resp.read().decode("utf-8", "replace")
 
 
+def needs_fetch(text):
+    """True for pobb.in / pastebin.com links, which load() downloads."""
+    return bool(re.match(r"https?://(?:www\.)?(?:pobb\.in|pastebin\.com)/", text.strip().strip('"')))
+
+
 def load(text):
     """Returns (specs, active_index) for whatever the user pasted or a file path."""
     text = text.strip().strip('"')

@@ -39,7 +39,7 @@ def latest_version():
 
 def matches(spec_version, version):
     """PoB stores "3_29", the export is called "3.29.1": compare major.minor."""
-    if not spec_version or not version:
+    if not spec_version or not (version or "")[:1].isdigit():   # some export commits aren't named by version
         return True
     return spec_version.replace("_", ".").split(".")[:2] == version.split(".")[:2]
 

@@ -75,6 +75,8 @@ class BuildInput(unittest.TestCase):
         self.assertTrue(updater.matches("3_29", "3.29.1"))
         self.assertFalse(updater.matches("3_28", "3.29.1"))
         self.assertTrue(updater.matches("", "3.29.1"))
+        self.assertTrue(updater.matches("3_28", "Curse of the Allflame Passive Tree preview"))
+        self.assertTrue(updater.matches("3_28", None))
 
 
 class TreeGeometry(unittest.TestCase):
@@ -212,11 +214,11 @@ class Site(unittest.TestCase):
 
 class PathOfBuilding(unittest.TestCase):
     def test_title(self):
-        self.assertEqual(pob.name_from_title("CRAB TOTEM (Hierophant) - Path of Building"), "CRAB TOTEM")
-        self.assertEqual(pob.name_from_title("Worb leveling  (Witch) - Path of Building"), "Worb leveling ")
-        self.assertEqual(pob.name_from_title("Flicker (2.0) (Raider) - Path of Building"), "Flicker (2.0)")
-        self.assertIsNone(pob.name_from_title("Path of Building"))
-        self.assertIsNone(pob.name_from_title("pobb.in - Path of Building - Google Chrome"))
+        self.assertEqual(pob.parse_title("CRAB TOTEM (Hierophant) - Path of Building")[0], "CRAB TOTEM")
+        self.assertEqual(pob.parse_title("Worb leveling  (Witch) - Path of Building")[0], "Worb leveling ")
+        self.assertEqual(pob.parse_title("Flicker (2.0) (Raider) - Path of Building")[0], "Flicker (2.0)")
+        self.assertIsNone(pob.parse_title("Path of Building")[0])
+        self.assertIsNone(pob.parse_title("pobb.in - Path of Building - Google Chrome")[0])
         self.assertEqual(pob.parse_title("Worb leveling  (Elementalist) [Tree 4] - Path of Building"),
                          ("Worb leveling ", 4))
         self.assertEqual(pob.parse_title("CRAB TOTEM (Hierophant) - Path of Building"), ("CRAB TOTEM", None))
@@ -313,6 +315,26 @@ class PathOfBuilding(unittest.TestCase):
         self.assertIsNone(pob.find_build("Other", builds))
         self.assertEqual(pob.character_for(new, ["Someone", "CrabGuy"]), "CrabGuy")
         self.assertIsNone(pob.character_for(old, ["CrabGuy"]))
+
+
+class Fixes(unittest.TestCase):
+    def test_links_to_fetch(self):
+        self.assertTrue(build.needs_fetch(" https://pobb.in/AbC-12 "))
+        self.assertTrue(build.needs_fetch('"https://pastebin.com/raw/x1"'))
+        self.assertFalse(build.needs_fetch("https://www.pathofexile.com/passive-skill-tree/AAAA"))
+        self.assertFalse(build.needs_fetch("eNrtWW1v2zYQ"))
+
+    def test_clear_forgets_the_tree_header(self):
+        from treeoverlay.tracker import Tracker
+        d = Path(tempfile.mkdtemp())
+        tr = Tracker()
+        tr.use_gate_file(d / "gate.png", (1440, 2560))
+        tr.gate = object()           # a learned header that no longer matches (game language changed)
+        (d / "gate.png").write_bytes(b"x")
+        tr.reset()
+        tr.forget_gate()
+        self.assertIsNone(tr.gate)
+        self.assertFalse((d / "gate.png").exists())
 
 
 if __name__ == "__main__":
