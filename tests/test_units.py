@@ -4,6 +4,7 @@
 """
 import base64
 import hashlib
+import json
 import os
 import tempfile
 import time
@@ -77,6 +78,20 @@ class BuildInput(unittest.TestCase):
         self.assertTrue(updater.matches("", "3.29.1"))
         self.assertTrue(updater.matches("3_28", "Curse of the Allflame Passive Tree preview"))
         self.assertTrue(updater.matches("3_28", None))
+
+    def test_newer_release(self):
+        def check(tag, current):
+            saved = updater._get
+            updater._get = lambda url: json.dumps({"tag_name": tag, "html_url": "page"}).encode()
+            try:
+                return updater.newer_release(current)
+            finally:
+                updater._get = saved
+        self.assertEqual(check("v0.9.3", "0.9.2"), ("0.9.3", "page"))
+        self.assertEqual(check("v0.10.0", "0.9.2"), ("0.10.0", "page"))    # numbers, not text: 10 > 9
+        self.assertIsNone(check("v0.9.2", "0.9.2"))
+        self.assertIsNone(check("v0.9.1", "0.9.2"))
+        self.assertIsNone(check("nightly", "0.9.2"))
 
 
 class TreeGeometry(unittest.TestCase):

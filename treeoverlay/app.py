@@ -40,7 +40,7 @@ DEFAULTS = {"last_input": "", "spec": -1, "mask_rects": None, "ui_scale": 1.0, "
             "pob_speed": False, "pob_link": False, "pob_marks": False, "pob_keys": False,
             "pob_gems": False, "pob_theme_light": False,
             "account": "", "character": "", "realm": "pc",
-            "show_labels": True, "route_length": 8, "auto_next_tree": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
+            "show_labels": True, "check_updates": True, "route_length": 8, "auto_next_tree": True, "keys": {"next_tree": "F6", "calibrate": "F7", "toggle": "F8", "reset": "F9"}}
 
 # PoB change (pob_patch) -> the setting that turns it on
 POB_PATCH_SETTINGS = {"title": "pob_title_patch", "theme": "pob_theme", "speed": "pob_speed",
@@ -1008,6 +1008,8 @@ class PopupCombo(QComboBox):
 
 
 class ControlWindow(QWidget):
+    release_found = Signal(object)   # (version, page) of a newer release, from the check's thread
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PoE Tree Overlay")
@@ -1118,6 +1120,10 @@ class ControlWindow(QWidget):
                 n=keys["next_tree"] or "The panel on the tree screen", v=__version__))
         lay.addSpacing(4)
         lay.addWidget(help_text)
+        self.release_note = theme.caption()
+        self.release_note.setOpenExternalLinks(True)
+        self.release_note.hide()
+        lay.addWidget(self.release_note)
         self.setMinimumWidth(640)
         self.resize(700, 0)
 
@@ -1184,6 +1190,27 @@ class ControlWindow(QWidget):
             self.pob_timer = QTimer(self, interval=1000, timeout=self.poll_pob)
             self.pob_timer.start()
             QTimer.singleShot(0, self.poll_pob)
+        self.release_found.connect(self.show_release)
+        if self.settings["check_updates"]:
+            threading.Thread(target=self.check_release, daemon=True).start()
+
+    # -- new releases -----------------------------------------------------------------
+    def check_release(self):
+        """Once per start (own thread): is a newer release on GitHub?"""
+        try:
+            found = updater.newer_release(__version__)
+        except Exception:     # offline, GitHub down, rate limited: look again next start
+            return
+        if found:
+            self.release_found.emit(found)
+
+    def show_release(self, found):
+        version, page = found
+        self.release_note.setText(f'<b>Version {version} is out:</b> <a href="{page}">download it on GitHub</a> '
+                                  "(replace the old folder; settings stay).")
+        self.release_note.show()
+        self.tray.showMessage("PoE Tree Overlay", f"Version {version} is out. Open the window for the download link.",
+                              app_icon(), 6000)
 
     def set_status(self, text):
         """The pill at the top right: the short state, the details on hover."""

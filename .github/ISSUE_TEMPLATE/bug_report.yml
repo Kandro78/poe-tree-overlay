@@ -1,0 +1,60 @@
+name: Bug report
+description: Something doesn't work or the rings sit in the wrong place
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The log file says what went wrong: `%APPDATA%\PoE Tree Overlay\log.txt`
+        (paste that path into Explorer's address bar). `log_prev.txt` next to it
+        is the run before, in case you restarted. Both hold only version info and
+        error traces.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you saw instead. Screenshots help (the overlay itself doesn't show in screenshots; a phone photo of the screen does).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Overlay version
+      description: At the bottom of the overlay's window, or the first line of log.txt.
+      placeholder: "0.9.2"
+    validations:
+      required: true
+  - type: input
+    id: resolution
+    attributes:
+      label: Game resolution and in-game UI scale
+      placeholder: "2560x1440, UI scale 100 %"
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Game display mode
+      options:
+        - Windowed Fullscreen
+        - Windowed
+        - Fullscreen (exclusive)
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Windows version and monitors
+      placeholder: "Windows 11, two monitors, game on the main one"
+  - type: input
+    id: pob
+    attributes:
+      label: Path of Building options switched on (Settings)
+      placeholder: "Live link, macOS-style look / none"
+  - type: textarea
+    id: log
+    attributes:
+      label: log.txt
+      description: Drag log.txt (and log_prev.txt) into this box, or paste their text.
+    validations:
+      required: true

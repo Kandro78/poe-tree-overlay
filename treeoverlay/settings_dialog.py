@@ -85,6 +85,10 @@ class SettingsDialog(QDialog):
         program = theme.Card()
         program.add(theme.row("Appearance", self.appearance))
         program.add(theme.row("Start minimized", self.minimized))
+        self.check_updates = theme.Switch()
+        self.check_updates.setChecked(settings.get("check_updates", True))
+        program.add(theme.row("Tell me when a new version is out", self.check_updates),
+                    theme.caption("Looks at the overlay's latest release on GitHub once per start."))
         self.pob = {}
         pob_card = theme.Card()
         for key, label, note in POB_OPTIONS:
@@ -140,6 +144,7 @@ class SettingsDialog(QDialog):
             "realm": self.realm.currentText(),
             "fps": self.fps.value(),
             "start_minimized": self.minimized.isChecked(),
+            "check_updates": self.check_updates.isChecked(),
             "appearance": self.appearance.currentData(),
             **{key: box.isChecked() for key, box in self.pob.items()},
             "keys": {a: (b.currentText() if b.currentText() != "Off" else "") for a, b in self.keys.items()},

@@ -200,12 +200,15 @@ Everything runs and stays on your PC. The only network calls are:
   only when an account name is set. With Path of Building installed, the
   account PoB imports from is filled in for you; clear the field and the
   overlay never talks to pathofexile.com.
+* GitHub, once per start, to see whether a newer release of the overlay is
+  out (switch it off under Settings → Program).
 
 No game memory is read, no input is sent to the game, nothing is uploaded.
 
 ## Reporting a problem
 
-Say your Windows version, resolution and in-game UI scale, and attach
+[Open a bug report](https://github.com/Kandro78/poe-tree-overlay/issues/new?template=bug_report.yml):
+the form asks for everything below. Say your Windows version, resolution and in-game UI scale, and attach
 `%APPDATA%\PoE Tree Overlay\log.txt` (`log_prev.txt` is the run before; both
 hold only version info and error traces). If the rings sit wrong or lag,
 a trace helps: set `TREEOVERLAY_TRACE=<file>` as described under Development,

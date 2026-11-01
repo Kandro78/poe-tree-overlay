@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.3 (2026-11-02)
+
+* The overlay tells you when a newer version is out: a note with the
+  download link in its window and a tray message. It asks GitHub once per
+  start; switch it off under Settings > Program.
+* Bug reports on GitHub use a form that asks for the version, resolution,
+  UI scale, display mode and log.txt.
+
 ## 0.9.2 (2026-10-31)
 
 * The download window (Update Tree Data, pobb.in / pastebin links) no longer
